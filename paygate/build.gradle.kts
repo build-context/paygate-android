@@ -61,7 +61,7 @@ afterEvaluate {
         publications {
             create<MavenPublication>("release") {
                 groupId = "com.paygate"
-                artifactId = "paygate-sdk"
+                artifactId = "paygate"
                 version = sdkVersion
                 from(components["release"])
                 pom {

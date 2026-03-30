@@ -1,19 +1,19 @@
 # Paygate Android SDK
 
-Kotlin/Android library mirroring the iOS `PaygateSDK` (WebView paywall + Google Play Billing).
+Kotlin/Android library mirroring the iOS `Paygate` SDK (WebView paywall + Google Play Billing).
 
 ## Build (standalone)
 
 ```bash
 cd sdks/android
-gradle :paygate-sdk:assembleRelease
+gradle :paygate:assembleRelease
 ```
 
 Requires `android.useAndroidX=true` (set in `gradle.properties`).
 
 ## Integrate in an app
 
-1. Add the `paygate-sdk` module (copy or `includeBuild` / Maven publication).
+1. Add the `paygate` module (copy or `includeBuild` / Maven publication).
 2. In `AndroidManifest.xml`, merging will add `PaygateActivity`.
 3. Initialize and launch from a `ComponentActivity` / `Activity`:
 

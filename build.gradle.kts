@@ -1,1 +1,1 @@
-// Root aggregator — see paygate-sdk/build.gradle.kts for repositories.
+// Root aggregator — see paygate/build.gradle.kts for repositories.

@@ -18,4 +18,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "paygate-android"
-include(":paygate-sdk")
+include(":paygate")
