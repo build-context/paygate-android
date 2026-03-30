@@ -1,0 +1,32 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  maven:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: .
+      - name: Publish (GitHub Packages + optional Maven Central)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          SIGNING_PRIVATE_KEY: ${{ secrets.ANDROID_SIGNING_GPG_PRIVATE_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_GPG_PASSPHRASE }}
+          SONATYPE_HOST: ${{ secrets.SONATYPE_HOST }}
+        run: ./gradlew :paygate-sdk:publish --no-daemon

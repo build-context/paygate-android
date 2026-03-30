@@ -5,7 +5,7 @@ plugins {
     id("signing")
 }
 
-val sdkVersion = rootProject.file("../VERSION").readText().trim()
+val sdkVersion = rootProject.file("VERSION").readText().trim()
 
 android {
     namespace = "com.paygate.sdk"
