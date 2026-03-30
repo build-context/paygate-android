@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  android:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,3 +22,49 @@ jobs:
         with:
           build-root-directory: .
       - run: ./gradlew :paygate-sdk:assembleRelease --no-daemon
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: .
+      - name: Detect version and tag status
+        id: ver
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if git tag -l "v${VERSION}" | grep -q .; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to Maven (GitHub Packages / optional Central)
+        if: steps.ver.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          SIGNING_PRIVATE_KEY: ${{ secrets.ANDROID_SIGNING_GPG_PRIVATE_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_GPG_PASSPHRASE }}
+          SONATYPE_HOST: ${{ secrets.SONATYPE_HOST }}
+        run: ./gradlew :paygate-sdk:publish --no-daemon
+      - name: Create and push release tag
+        if: steps.ver.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.ver.outputs.version }}" -m "v${{ steps.ver.outputs.version }}"
+          git push origin "v${{ steps.ver.outputs.version }}"
