@@ -11,7 +11,8 @@ internal fun parseProductData(o: JSONObject): ProductData =
         id = o.getString("id"),
         name = o.optString("name", ""),
         appStoreId = o.optStringOrNull("appStoreId"),
-        playStoreId = o.optStringOrNull("playStoreId")
+        playStoreId = o.optStringOrNull("playStoreId"),
+        playBasePlanId = o.optStringOrNull("playBasePlanId")
     )
 
 internal fun parseFlowPage(o: JSONObject): FlowPage =
@@ -40,6 +41,9 @@ internal fun FlowData.toJsonObject(): JSONObject {
                 put("name", pr.name)
                 pr.appStoreId?.let { put("appStoreId", it) }
                 pr.playStoreId?.let { put("playStoreId", it) }
+                // Round-trips through the launch cache; without it a cached
+                // flow would fall back to Play's first offer on purchase.
+                pr.playBasePlanId?.let { put("playBasePlanId", it) }
             }
         )
     }

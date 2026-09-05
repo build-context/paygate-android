@@ -173,7 +173,8 @@ object Paygate {
         val product = withContext(Dispatchers.IO) { pr.getProduct(productId) }
         val playId = product.playStoreId?.takeIf { it.isNotBlank() }
             ?: throw PaygateException.ProductNotFound
-        return BillingManager.get(appContext).purchase(activity, playId)
+        val basePlanId = product.playBasePlanId?.takeIf { it.isNotBlank() }
+        return BillingManager.get(appContext).purchase(activity, playId, basePlanId)
     }
 
     private suspend fun presentPaywall(

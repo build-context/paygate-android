@@ -24,7 +24,17 @@ data class ProductData(
     val id: String,
     val name: String,
     val appStoreId: String?,
-    val playStoreId: String?
+    val playStoreId: String?,
+    /**
+     * Which base plan on [playStoreId] this product means.
+     *
+     * A Play subscription id can carry several base plans, each with its own
+     * billing period and its own offers, so the id alone does not identify a
+     * cadence or a price. When this is set the purchase flow uses it to pick
+     * the offer token; when it is null the flow falls back to Play's first
+     * offer, whatever that happens to be.
+     */
+    val playBasePlanId: String? = null
 )
 
 data class FlowData(
@@ -41,6 +51,15 @@ data class FlowData(
             products?.forEach { p ->
                 val sid = p.playStoreId?.takeIf { it.isNotBlank() }
                 if (sid != null) this[p.id] = sid
+            }
+        }
+
+    /** Maps Paygate product IDs to the Play base plan the product refers to. */
+    val basePlanIdMap: Map<String, String>
+        get() = buildMap {
+            products?.forEach { p ->
+                val bp = p.playBasePlanId?.takeIf { it.isNotBlank() }
+                if (bp != null) this[p.id] = bp
             }
         }
 }

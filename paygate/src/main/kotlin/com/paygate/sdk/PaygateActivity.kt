@@ -233,6 +233,7 @@ class PaygateActivity : Activity() {
         val data = o.optJSONObject("data")?.toStringMap()
         val map = flowData.productIdMap
         val storeId = map[productId] ?: productId
+        val basePlanId = flowData.basePlanIdMap[productId]
         if (eventBuffer != null) {
             eventBuffer?.append("purchase_initiated", mapOf("productId" to productId))
         } else {
@@ -244,7 +245,7 @@ class PaygateActivity : Activity() {
         CoroutineScope(Dispatchers.Main).launch {
             try {
                 val purchased = BillingManager.get(applicationContext)
-                    .purchase(this@PaygateActivity, storeId)
+                    .purchase(this@PaygateActivity, storeId, basePlanId)
                 if (purchased != null) {
                     if (eventBuffer != null) {
                         eventBuffer?.append("purchase_completed", mapOf("productId" to purchased))

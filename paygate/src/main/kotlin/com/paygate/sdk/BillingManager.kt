@@ -133,7 +133,41 @@ class BillingManager private constructor(private val appContext: Context) {
         activeSubscriptionProductIds = active.toSet()
     }
 
-    suspend fun purchase(activity: Activity, storeProductId: String): String? {
+    /**
+     * Picks the offer token to launch the billing flow with.
+     *
+     * `subscriptionOfferDetails` spans every base plan on the subscription id
+     * and every offer within each, so taking the first entry charges whichever
+     * cadence Play happened to list first — and can select a promotional offer
+     * in place of the standing price. Given a base plan we narrow to it and
+     * prefer its plain price, which is the entry with no offerId.
+     *
+     * Play applies an offer only if the user is actually eligible, so choosing
+     * the base price here never withholds a trial the user has coming; it just
+     * stops us naming a trial as the thing being bought.
+     */
+    internal fun selectOfferToken(details: ProductDetails, basePlanId: String?): String? {
+        val offers = details.subscriptionOfferDetails.orEmpty()
+        if (offers.isEmpty()) return null
+
+        val forBasePlan = basePlanId?.let { bp -> offers.filter { it.basePlanId == bp } }
+        if (basePlanId != null && forBasePlan.isNullOrEmpty()) {
+            // Naming a base plan Play does not have means the console and Play
+            // Console disagree. Falling back would quietly bill the wrong
+            // cadence, which is the exact failure the base plan id prevents.
+            android.util.Log.e(
+                "Paygate",
+                "Base plan '$basePlanId' not found on ${details.productId}; " +
+                    "available: ${offers.map { it.basePlanId }.distinct()}"
+            )
+            return null
+        }
+
+        val candidates = forBasePlan ?: offers
+        return (candidates.firstOrNull { it.offerId == null } ?: candidates.first()).offerToken
+    }
+
+    suspend fun purchase(activity: Activity, storeProductId: String, basePlanId: String? = null): String? {
         val c = client ?: return null
         val details = queryProductDetails(c, storeProductId) ?: run {
             android.util.Log.e("Paygate", "No ProductDetails for $storeProductId")
@@ -144,8 +178,9 @@ class BillingManager private constructor(private val appContext: Context) {
                 .setProductDetails(details)
                 .apply {
                     if (details.productType == BillingClient.ProductType.SUBS) {
-                        val offer = details.subscriptionOfferDetails?.firstOrNull()
-                        if (offer != null) setOfferToken(offer.offerToken)
+                        val token = selectOfferToken(details, basePlanId)
+                            ?: throw PaygateException.ProductNotFound
+                        setOfferToken(token)
                     }
                 }
                 .build()
