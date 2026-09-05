@@ -21,7 +21,7 @@ object Paygate {
     @JvmStatic
     val apiVersion: String = PAYGATE_API_VERSION
 
-    private const val DEFAULT_BASE_URL = "https://api-oh6xuuomca-uc.a.run.app"
+    private const val DEFAULT_BASE_URL = "https://api-crtw3ydz4q-uc.a.run.app"
 
     private lateinit var appContext: Context
     private var apiKey: String? = null
