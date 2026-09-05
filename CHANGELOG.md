@@ -1,3 +1,7 @@
+## 0.1.8
+
+- Point default base URL at the paygate-prod-bc API host
+
 ## 0.1.7
 
 - Rename module from paygate-sdk to paygate
