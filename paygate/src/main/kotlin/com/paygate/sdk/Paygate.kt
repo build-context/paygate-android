@@ -72,11 +72,17 @@ object Paygate {
         return BillingManager.get(appContext).activeSubscriptionProductIds.toSet()
     }
 
+    /**
+     * @param appearance Color scheme to pin the flow to. Flows carry no
+     *   appearance of their own — that setting lives on the gate — so this
+     *   defaults to [PaygateAppearance.SYSTEM], which follows the device.
+     */
     suspend fun launchFlow(
         activity: Activity,
         flowId: String,
         bounces: Boolean = false,
-        presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET
+        presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET,
+        appearance: PaygateAppearance = PaygateAppearance.SYSTEM
     ): PaygateLaunchResult {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val fr = flows ?: throw PaygateException.NotInitialized
@@ -104,16 +110,25 @@ object Paygate {
             gateId = null,
             purchaseRequired = false,
             disableWebViewCache = false,
+            appearance = appearance,
             presentationStyle = presentationStyle
         )
         return mapFlowLaunchResult(raw)
     }
 
+    /**
+     * @param appearance Overrides the appearance configured on the gate. Pass
+     *   this when your app has its own light/dark setting: a WebView follows
+     *   the system night mode, not your app, so leaving it to the gate means
+     *   the paywall can disagree with the screen behind it. `null` (the
+     *   default) uses whatever the gate is set to.
+     */
     suspend fun launchGate(
         activity: Activity,
         gateId: String,
         bounces: Boolean = false,
-        presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET
+        presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET,
+        appearance: PaygateAppearance? = null
     ): PaygateLaunchResult {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val gr = gates ?: throw PaygateException.NotInitialized
@@ -163,6 +178,10 @@ object Paygate {
             gateId = gateId,
             purchaseRequired = response.requirePurchase,
             disableWebViewCache = response.launchCache == "refresh_on_launch",
+            // The caller wins. Only the app knows whether it has a theme
+            // setting of its own; the gate's value is a default for those
+            // that do not.
+            appearance = appearance ?: response.appearance,
             presentationStyle = presentationStyle
         )
         return mapGateLaunchResult(raw)
@@ -186,6 +205,7 @@ object Paygate {
         gateId: String?,
         purchaseRequired: Boolean,
         disableWebViewCache: Boolean,
+        appearance: PaygateAppearance,
         @Suppress("UNUSED_PARAMETER") presentationStyle: PaygatePresentationStyle
     ): PaygateResult = withContext(Dispatchers.Main) {
         coroutineScope {
@@ -200,7 +220,8 @@ object Paygate {
                 bounces = bounces,
                 gateId = gateId,
                 purchaseRequired = purchaseRequired,
-                disableWebViewCache = disableWebViewCache
+                disableWebViewCache = disableWebViewCache,
+                appearance = appearance
             )
             // TODO: sheet vs fullScreen — Android uses single Activity theme; host may wrap in BottomSheet if needed.
             activity.startActivity(intent)

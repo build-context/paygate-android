@@ -99,6 +99,7 @@ internal fun parseGateFlowResponse(o: JSONObject): GateFlowResponse {
         else -> false
     }
     val launchCache = o.optString("launchCache", "cache_on_first_launch")
+    val appearance = PaygateAppearance.fromServerValue(o.optString("appearance", "system"))
     val pages = mutableListOf<FlowPage>()
     o.optJSONArray("pages")?.let { arr ->
         for (i in 0 until arr.length()) pages.add(parseFlowPage(arr.getJSONObject(i)))
@@ -116,6 +117,7 @@ internal fun parseGateFlowResponse(o: JSONObject): GateFlowResponse {
         enabledChannels = enabledChannels,
         requirePurchase = requirePurchase,
         launchCache = launchCache,
+        appearance = appearance,
         id = o.getString("id"),
         name = o.optString("name", ""),
         pages = pages,

@@ -9,10 +9,48 @@ enum class DistributionChannel {
     DEBUG
 }
 
+/**
+ * Which color scheme a flow renders in.
+ *
+ * A WebView's `prefers-color-scheme` follows the system night mode, not your
+ * app — so an app with its own light/dark setting shows a paywall that can
+ * disagree with the screen behind it. Pinning this fixes that.
+ *
+ * Set on the gate in the Paygate console, and overridable per launch: an
+ * appearance passed to [Paygate.launchGate] wins, because only the app knows
+ * whether it has a theme preference of its own.
+ */
+enum class PaygateAppearance {
+    /** Follow the device's night mode. The default. */
+    SYSTEM,
+
+    /** Render light regardless of the device setting. */
+    LIGHT,
+
+    /** Render dark regardless of the device setting. */
+    DARK;
+
+    companion object {
+        /**
+         * Parses a server value, falling back to [SYSTEM] for anything
+         * unrecognized — an API that grows a fourth value must not break a
+         * paywall built against three.
+         */
+        @JvmStatic
+        fun fromServerValue(raw: String?): PaygateAppearance =
+            when (raw?.lowercase()) {
+                "light" -> LIGHT
+                "dark" -> DARK
+                else -> SYSTEM
+            }
+    }
+}
+
 data class GateData(
     val enabledChannels: List<String>,
     val requirePurchase: Boolean,
-    val launchCache: String
+    val launchCache: String,
+    val appearance: PaygateAppearance = PaygateAppearance.SYSTEM
 )
 
 data class FlowPage(
@@ -70,6 +108,7 @@ data class GateFlowResponse(
     val enabledChannels: List<String>,
     val requirePurchase: Boolean,
     val launchCache: String,
+    val appearance: PaygateAppearance,
     val id: String,
     val name: String,
     val pages: List<FlowPage>,
@@ -78,7 +117,7 @@ data class GateFlowResponse(
     val products: List<ProductData>?
 ) {
     val gate: GateData
-        get() = GateData(enabledChannels, requirePurchase, launchCache)
+        get() = GateData(enabledChannels, requirePurchase, launchCache, appearance)
 
     val flowData: FlowData
         get() = FlowData(id, name, pages, bridgeScript, productIds, products)

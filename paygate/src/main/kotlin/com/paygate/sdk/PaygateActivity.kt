@@ -2,9 +2,12 @@ package com.paygate.sdk
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -31,6 +34,7 @@ class PaygateActivity : Activity() {
     private var gateId: String? = null
     private var purchaseRequired: Boolean = false
     private var disableWebViewCache: Boolean = false
+    private var appearance: PaygateAppearance = PaygateAppearance.SYSTEM
     private var didComplete: Boolean = false
 
     private var eventBuffer: PresentationEventBuffer? = null
@@ -45,8 +49,8 @@ class PaygateActivity : Activity() {
             return
         }
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val wv = WebView(this).apply {
+        val root = FrameLayout(this).apply { setBackgroundColor(backgroundColorForAppearance()) }
+        val wv = WebView(webViewContextForAppearance()).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
@@ -104,6 +108,42 @@ class PaygateActivity : Activity() {
         loadFlowHtml()
     }
 
+    /**
+     * The context the WebView is built with, carrying the night-mode bits that
+     * decide which `prefers-color-scheme` rules the flow's CSS matches.
+     *
+     * WebView reads that media query from its own context's configuration, not
+     * from the device setting — so overriding the configuration here is what
+     * pins the flow. Injecting CSS could not do this: injected rules cannot
+     * change which media queries match.
+     *
+     * [PaygateAppearance.SYSTEM] returns the Activity untouched, so an app that
+     * has already set its own night mode keeps it.
+     *
+     * The override is wrapped in a [ContextThemeWrapper] carrying this
+     * Activity's theme: a WebView built on a bare configuration context loses
+     * the Activity theme, which costs it IME and popup behavior.
+     */
+    private fun webViewContextForAppearance(): Context {
+        val nightBits = when (appearance) {
+            PaygateAppearance.SYSTEM -> return this
+            PaygateAppearance.LIGHT -> Configuration.UI_MODE_NIGHT_NO
+            PaygateAppearance.DARK -> Configuration.UI_MODE_NIGHT_YES
+        }
+        val overridden = Configuration(resources.configuration).apply {
+            uiMode = (uiMode and Configuration.UI_MODE_NIGHT_MASK.inv()) or nightBits
+        }
+        return ContextThemeWrapper(createConfigurationContext(overridden), theme)
+    }
+
+    /**
+     * The color behind a flow that has not painted yet. Black is the
+     * pre-appearance behavior and stays the default; a black flash before a
+     * light paywall reads as a broken screen.
+     */
+    private fun backgroundColorForAppearance(): Int =
+        if (appearance == PaygateAppearance.LIGHT) Color.WHITE else Color.BLACK
+
     private fun parseIntent(): Boolean {
         val b = intent.extras ?: return false
         apiKey = b.getString(EXTRA_API_KEY) ?: return false
@@ -112,6 +152,7 @@ class PaygateActivity : Activity() {
         gateId = b.getString(EXTRA_GATE_ID)
         purchaseRequired = b.getBoolean(EXTRA_PURCHASE_REQUIRED, false)
         disableWebViewCache = b.getBoolean(EXTRA_DISABLE_CACHE, false)
+        appearance = PaygateAppearance.fromServerValue(b.getString(EXTRA_APPEARANCE))
         val flowJson = b.getString(EXTRA_FLOW_JSON) ?: return false
         flowData = try {
             parseFlowData(JSONObject(flowJson))
@@ -320,6 +361,7 @@ class PaygateActivity : Activity() {
         const val EXTRA_GATE_ID = "paygate_gate_id"
         const val EXTRA_PURCHASE_REQUIRED = "paygate_purchase_required"
         const val EXTRA_DISABLE_CACHE = "paygate_disable_cache"
+        const val EXTRA_APPEARANCE = "paygate_appearance"
         const val EXTRA_FLOW_JSON = "paygate_flow_json"
 
         fun createIntent(
@@ -330,7 +372,8 @@ class PaygateActivity : Activity() {
             bounces: Boolean,
             gateId: String?,
             purchaseRequired: Boolean,
-            disableWebViewCache: Boolean
+            disableWebViewCache: Boolean,
+            appearance: PaygateAppearance = PaygateAppearance.SYSTEM
         ): Intent {
             return Intent(activity, PaygateActivity::class.java).apply {
                 putExtra(EXTRA_API_KEY, apiKey)
@@ -339,6 +382,7 @@ class PaygateActivity : Activity() {
                 putExtra(EXTRA_GATE_ID, gateId)
                 putExtra(EXTRA_PURCHASE_REQUIRED, purchaseRequired)
                 putExtra(EXTRA_DISABLE_CACHE, disableWebViewCache)
+                putExtra(EXTRA_APPEARANCE, appearance.name)
                 putExtra(EXTRA_FLOW_JSON, flowData.toJsonObject().toString())
             }
         }
