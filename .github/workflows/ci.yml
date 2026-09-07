@@ -23,48 +23,14 @@ jobs:
           build-root-directory: .
       - run: ./gradlew :paygate:assembleRelease --no-daemon
 
-  release:
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          build-root-directory: .
-      - name: Detect version and tag status
-        id: ver
-        run: |
-          VERSION=$(tr -d '[:space:]' < VERSION)
-          if git tag -l "v${VERSION}" | grep -q .; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Create and push release tag
-        if: steps.ver.outputs.changed == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ steps.ver.outputs.version }}" -m "v${{ steps.ver.outputs.version }}"
-          git push origin "v${{ steps.ver.outputs.version }}"
-      - name: Publish to Maven (GitHub Packages / optional Central)
-        if: steps.ver.outputs.changed == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
-          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
-          SIGNING_PRIVATE_KEY: ${{ secrets.ANDROID_SIGNING_GPG_PRIVATE_KEY }}
-          SIGNING_PASSWORD: ${{ secrets.ANDROID_SIGNING_GPG_PASSPHRASE }}
-          SONATYPE_HOST: ${{ secrets.SONATYPE_HOST }}
-        run: ./gradlew :paygate:publish --no-daemon
+# Releases are NOT automated. Publishing is done by hand from the monorepo — see
+# sdks/RELEASING.md and scripts/release-sdk.sh.
+#
+# The release jobs that used to live here were removed on purpose. Every channel
+# failed at some point on an expired or misconfigured credential — a CocoaPods
+# trunk session that lapsed, a pub.dev token, an npm scope that rejects the
+# token — and the failures were quiet: a tag would be created and the publish
+# would fail after it, leaving the repo looking released when nothing had been.
+# A human running one script and reading its output is slower and more honest.
+#
+# This build job stays: it is the signal that the mirrored source still compiles.

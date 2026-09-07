@@ -46,11 +46,48 @@ dependencies {
     implementation("com.android.billingclient:billing-ktx:7.1.1")
 }
 
+/**
+ * The Maven coordinate's group.
+ *
+ * Configurable because Maven Central verifies that you own the namespace, and
+ * which one you can claim depends on a domain you control:
+ *   com.paygate            needs paygate.com
+ *   dev.paygate            needs paygate.dev
+ *   io.github.build-context  needs only the GitHub org, so it is always claimable
+ *
+ * GitHub Packages does not verify anything, which is why this has been
+ * com.paygate unchallenged. Changing it changes the coordinate every consumer
+ * imports, so the React Native and Flutter pins and the install docs move with
+ * it — see sdks/RELEASING.md.
+ */
+val paygateGroupId: String = (findProperty("paygate.groupId") as String?) ?: "com.paygate"
+
 val ossrhUsername = System.getenv("OSSRH_USERNAME")
 val ossrhPassword = System.getenv("OSSRH_PASSWORD")
 val signingPrivateKey = System.getenv("SIGNING_PRIVATE_KEY")
 val signingPassword = System.getenv("SIGNING_PASSWORD")
-val sonatypeHost = System.getenv("SONATYPE_HOST")?.takeIf { it == "s01" || it == "oss" } ?: "s01"
+
+/**
+ * Where Central actually accepts uploads now.
+ *
+ * The old OSSRH hosts this used to point at — oss.sonatype.org and
+ * s01.oss.sonatype.org — were decommissioned and both return 404, so the Central
+ * path here could not have worked regardless of credentials. Sonatype kept an
+ * OSSRH-compatible staging API on the Portal precisely so `maven-publish` setups
+ * like this one keep working; a deployment lands there and is then released from
+ * central.sonatype.com.
+ *
+ * Overridable so a future host change does not need a code edit.
+ */
+val centralStagingUrl: String = System.getenv("SONATYPE_STAGING_URL")
+    ?: "https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/"
+
+/**
+ * Central requires signed artifacts, so credentials alone are not enough. All
+ * four have to be present or the repository is not registered at all — a
+ * half-configured Central publish that uploads unsigned artifacts fails late,
+ * after the upload, which is the slowest way to find out.
+ */
 val publishToMavenCentral = !ossrhUsername.isNullOrBlank() &&
     !ossrhPassword.isNullOrBlank() &&
     !signingPrivateKey.isNullOrBlank() &&
@@ -60,7 +97,7 @@ afterEvaluate {
     publishing {
         publications {
             create<MavenPublication>("release") {
-                groupId = "com.paygate"
+                groupId = paygateGroupId
                 artifactId = "paygate"
                 version = sdkVersion
                 from(components["release"])
@@ -78,6 +115,11 @@ afterEvaluate {
                         developer {
                             id.set("paygate")
                             name.set("Paygate")
+                            // Central's POM validation wants a contactable
+                            // developer, not just an id.
+                            email.set("support@paygate.dev")
+                            organization.set("Build Context")
+                            organizationUrl.set("https://github.com/build-context")
                         }
                     }
                     scm {
@@ -104,8 +146,10 @@ afterEvaluate {
             if (publishToMavenCentral) {
                 maven {
                     name = "Sonatype"
-                    url = uri("https://$sonatypeHost.oss.sonatype.org/service/local/staging/deploy/maven2/")
+                    url = uri(centralStagingUrl)
                     credentials {
+                        // A Central Portal *user token*, not the account login.
+                        // Generate it at central.sonatype.com under Account.
                         username = ossrhUsername
                         password = ossrhPassword
                     }
