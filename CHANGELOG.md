@@ -1,3 +1,18 @@
+## 0.3.1
+
+- **Fix: `Paygate.initialize` crashed the app on Play Billing 8.** The client was
+  built with the no-arg `enablePendingPurchases()`, which was deprecated in
+  Billing 6.2 and **removed in 8.0.0**. This module compiles against 7.1.1, where
+  the method still exists, so nothing failed to build — it surfaced only at
+  runtime, as a `NoSuchMethodError` on the main thread, and only in host apps
+  that put a newer billing library on the classpath.
+- Any app also using Flutter's `in_app_purchase` is such a host: its Android
+  package requires `billing:8.0.0`, Gradle resolves to the highest version, and
+  this SDK is handed a `BillingClient.Builder` without the method it was
+  compiled against. The app died at launch before any paywall could open.
+- Now uses the `PendingPurchasesParams` form, which exists from 6.2 onward — so
+  it still compiles here and works on 7 and 8 alike.
+
 ## 0.3.0
 
 - Gates can pin a flow's colour scheme. A WebView reads `prefers-color-scheme`

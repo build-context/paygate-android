@@ -7,6 +7,7 @@ import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.PurchasesUpdatedListener
@@ -76,7 +77,21 @@ class BillingManager private constructor(private val appContext: Context) {
         if (client != null) return
         val c = BillingClient.newBuilder(appContext)
             .setListener(purchasesUpdatedListener)
-            .enablePendingPurchases()
+            // The no-arg `enablePendingPurchases()` was deprecated in Billing 6.2
+            // and **removed in 8.0.0**. Calling it is not a compile error here —
+            // this module builds against 7.1.1, where it still exists — it is a
+            // `NoSuchMethodError` that kills the app's main thread at
+            // `Paygate.initialize`, and only in host apps that drag a newer
+            // billing library onto the classpath. Any app also using
+            // `in_app_purchase` does: its Android package requires 8.0.0, Gradle
+            // resolves to the highest, and this SDK gets a BillingClient.Builder
+            // that no longer has the method it was compiled against.
+            //
+            // The params form exists from 6.2 onward, so it compiles here and
+            // works on 7 and 8 alike.
+            .enablePendingPurchases(
+                PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()
+            )
             .build()
         client = c
         c.startConnection(object : BillingClientStateListener {
