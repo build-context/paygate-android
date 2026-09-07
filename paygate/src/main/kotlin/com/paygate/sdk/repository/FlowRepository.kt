@@ -9,8 +9,8 @@ internal class FlowRepository(
     appContext: android.content.Context
 ) : PaygateRepository(baseURL, apiKey, appContext) {
 
-    fun getFlow(flowId: String): FlowData {
-        val json = getJson("/sdk/flows/$flowId")
+    fun getFlow(flowId: String, storefront: String? = null): FlowData {
+        val json = getJson("/sdk/flows/$flowId", storefront)
         return parseFlowData(json)
     }
 }

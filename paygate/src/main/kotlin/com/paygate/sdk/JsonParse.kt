@@ -84,9 +84,20 @@ internal fun parseFlowData(o: JSONObject): FlowData {
 }
 
 internal fun parseGateFlowResponse(o: JSONObject): GateFlowResponse {
-    val enabledChannels = mutableListOf<String>()
-    o.optJSONArray("enabledChannels")?.let { arr ->
-        for (i in 0 until arr.length()) enabledChannels.add(arr.getString(i))
+    val channels = mutableListOf<GateChannel>()
+    o.optJSONArray("channels")?.let { arr ->
+        for (i in 0 until arr.length()) {
+            val c = arr.getJSONObject(i)
+            channels.add(
+                GateChannel(
+                    channel = c.getString("channel"),
+                    // Absent means enabled. A gate that hides itself is the
+                    // costlier reading of a field the server did not send.
+                    enabled = c.optBoolean("enabled", true),
+                    launchCache = PaygateLaunchCache.fromServerValue(c.optString("launchCache"))
+                )
+            )
+        }
     }
     val requirePurchase = when {
         o.has("requirePurchase") && !o.isNull("requirePurchase") -> {
@@ -98,7 +109,6 @@ internal fun parseGateFlowResponse(o: JSONObject): GateFlowResponse {
         }
         else -> false
     }
-    val launchCache = o.optString("launchCache", "cache_on_first_launch")
     val appearance = PaygateAppearance.fromServerValue(o.optString("appearance", "system"))
     val pages = mutableListOf<FlowPage>()
     o.optJSONArray("pages")?.let { arr ->
@@ -114,9 +124,8 @@ internal fun parseGateFlowResponse(o: JSONObject): GateFlowResponse {
     return GateFlowResponse(
         gateId = o.getString("gateId"),
         selectedFlowId = o.getString("selectedFlowId"),
-        enabledChannels = enabledChannels,
+        channels = channels,
         requirePurchase = requirePurchase,
-        launchCache = launchCache,
         appearance = appearance,
         id = o.getString("id"),
         name = o.optString("name", ""),

@@ -1,12 +1,12 @@
 package com.paygate.sdk
 
 /** Date-based API version; must match backend supported `Paygate-Version`. */
-const val PAYGATE_API_VERSION = "2025-03-16"
+const val PAYGATE_API_VERSION = "2026-09-07"
 
-enum class DistributionChannel {
-    PRODUCTION,
-    TESTFLIGHT,
-    DEBUG
+enum class DistributionChannel(val apiValue: String) {
+    PRODUCTION("production"),
+    TESTFLIGHT("testflight"),
+    DEBUG("debug")
 }
 
 /**
@@ -46,12 +46,71 @@ enum class PaygateAppearance {
     }
 }
 
-data class GateData(
-    val enabledChannels: List<String>,
-    val requirePurchase: Boolean,
-    val launchCache: String,
-    val appearance: PaygateAppearance = PaygateAppearance.SYSTEM
+/** How the SDK caches a gate's content on a given channel. */
+enum class PaygateLaunchCache(val apiValue: String) {
+    /** Fetch once, then reuse for the rest of the process. The default. */
+    CACHE_ON_FIRST_LAUNCH("cache_on_first_launch"),
+
+    /** Re-fetch on every launch, so console edits appear without a reinstall. */
+    REFRESH_ON_LAUNCH("refresh_on_launch");
+
+    companion object {
+        /**
+         * Parses a server value, falling back to [CACHE_ON_FIRST_LAUNCH] for
+         * anything unrecognized — an API that grows a third value must not
+         * break a paywall built against two.
+         */
+        @JvmStatic
+        fun fromServerValue(raw: String?): PaygateLaunchCache =
+            when (raw?.lowercase()) {
+                "refresh_on_launch" -> REFRESH_ON_LAUNCH
+                else -> CACHE_ON_FIRST_LAUNCH
+            }
+    }
+}
+
+/**
+ * One distribution channel's settings on a gate: whether the gate shows there,
+ * and how it caches there.
+ *
+ * Caching is per channel because that is where it varies. A debug build wants
+ * [PaygateLaunchCache.REFRESH_ON_LAUNCH] so flow edits appear immediately;
+ * production wants [PaygateLaunchCache.CACHE_ON_FIRST_LAUNCH] so the paywall
+ * does not wait on the network.
+ */
+data class GateChannel(
+    val channel: String,
+    val enabled: Boolean,
+    val launchCache: PaygateLaunchCache
 )
+
+data class GateData(
+    /** One entry per channel the server knows about. */
+    val channels: List<GateChannel>,
+    val requirePurchase: Boolean,
+    val appearance: PaygateAppearance = PaygateAppearance.SYSTEM
+) {
+    /** This build's channel entry, or null if the gate says nothing about it. */
+    fun channelFor(channel: DistributionChannel): GateChannel? =
+        channels.firstOrNull { it.channel == channel.apiValue }
+
+    /**
+     * Whether the gate shows on [channel].
+     *
+     * A gate that lists no channels at all shows everywhere. That is what an
+     * empty `enabledChannels` meant before per-channel config, and it is the
+     * only safe reading of a response this build does not understand: the
+     * alternative is a paywall that silently never appears.
+     */
+    fun isEnabledOn(channel: DistributionChannel): Boolean {
+        if (channels.isEmpty()) return true
+        return channelFor(channel)?.enabled ?: true
+    }
+
+    /** How to cache on [channel]. */
+    fun launchCacheOn(channel: DistributionChannel): PaygateLaunchCache =
+        channelFor(channel)?.launchCache ?: PaygateLaunchCache.CACHE_ON_FIRST_LAUNCH
+}
 
 data class FlowPage(
     val id: String,
@@ -105,9 +164,8 @@ data class FlowData(
 data class GateFlowResponse(
     val gateId: String,
     val selectedFlowId: String,
-    val enabledChannels: List<String>,
+    val channels: List<GateChannel>,
     val requirePurchase: Boolean,
-    val launchCache: String,
     val appearance: PaygateAppearance,
     val id: String,
     val name: String,
@@ -117,7 +175,7 @@ data class GateFlowResponse(
     val products: List<ProductData>?
 ) {
     val gate: GateData
-        get() = GateData(enabledChannels, requirePurchase, launchCache, appearance)
+        get() = GateData(channels, requirePurchase, appearance)
 
     val flowData: FlowData
         get() = FlowData(id, name, pages, bridgeScript, productIds, products)

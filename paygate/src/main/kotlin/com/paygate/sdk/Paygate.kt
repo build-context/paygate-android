@@ -21,6 +21,19 @@ object Paygate {
     @JvmStatic
     val apiVersion: String = PAYGATE_API_VERSION
 
+    /**
+     * The Cloud Run hostname, not `api.usepaygate.com`.
+     *
+     * The custom domain's DNS is in place (it CNAMEs to `ghs.googlehosted.com`)
+     * but the mapping is not serving yet — TLS does not complete, so every
+     * request fails before it reaches the API. This is compiled into shipped
+     * apps and cannot be fixed remotely, so it stays on the hostname that
+     * actually answers until the mapping is live.
+     *
+     * Switch back once `curl https://api.usepaygate.com/health` returns 200.
+     * Cloud Run keeps serving this hostname indefinitely, so already-shipped
+     * builds continue to work either way.
+     */
     private const val DEFAULT_BASE_URL = "https://api-crtw3ydz4q-uc.a.run.app"
 
     private lateinit var appContext: Context
@@ -34,18 +47,49 @@ object Paygate {
     private var gates: GateRepository? = null
     private var products: ProductRepository? = null
 
-    /** Current distribution channel for gate `enabledChannels` checks. */
+    /**
+     * Force a store country for previewing prices, e.g. "CA".
+     *
+     * **Testing only, and it stops working on the `production` channel.** The
+     * server refuses an override on production and logs that it did — a preview
+     * switch left on in a shipped build would show every reader a price nobody
+     * is charged, which is the rejection storefront pricing exists to prevent
+     * rather than cause.
+     *
+     * Set it before launching a gate; leave it null to use the real store
+     * country.
+     */
+    @JvmStatic
+    var storefrontOverride: String? = null
+
+    /**
+     * The reader's Play store country, e.g. "CA" — null until Play answers.
+     *
+     * Read fresh on every launch; see [BillingManager.currentStorefront].
+     */
+    @JvmStatic
+    suspend fun currentStorefront(): String? =
+        if (::appContext.isInitialized) BillingManager.get(appContext).currentStorefront() else null
+
+    /**
+     * Cache key for a fetched flow or gate.
+     *
+     * The storefront is part of the key because the server bakes resolved
+     * prices into the HTML. Keyed by id alone, a gate set to
+     * `cache_on_first_launch` would serve whatever country happened to open it
+     * first to everyone afterwards — the same wrong-price bug, with a harder
+     * repro.
+     */
+    private fun cacheKey(id: String, storefront: String?): String =
+        // The platform is constant within a build, so it adds nothing here.
+        "$id|${storefront ?: "-"}"
+
+    /** Current distribution channel, for the gate's per-channel settings. */
     @JvmStatic
     fun currentChannel(context: Context): DistributionChannel {
         val debug =
             (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         return if (debug) DistributionChannel.DEBUG else DistributionChannel.PRODUCTION
-    }
-
-    private fun channelApiValue(channel: DistributionChannel): String = when (channel) {
-        DistributionChannel.PRODUCTION -> "production"
-        DistributionChannel.TESTFLIGHT -> "testflight"
-        DistributionChannel.DEBUG -> "debug"
     }
 
     /**
@@ -87,8 +131,12 @@ object Paygate {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val fr = flows ?: throw PaygateException.NotInitialized
 
+        // Never block the launch on Play — see BillingManager.currentStorefront.
+        val storefront = currentStorefront()
+        val flowKey = cacheKey(flowId, storefront)
+
         val flowData = withContext(Dispatchers.IO) {
-            flowCache[flowId] ?: fr.getFlow(flowId).also { flowCache[flowId] = it }
+            flowCache[flowKey] ?: fr.getFlow(flowId, storefront).also { flowCache[flowKey] = it }
         }
 
         val active = BillingManager.get(appContext).activeSubscriptionProductIds
@@ -111,6 +159,7 @@ object Paygate {
             purchaseRequired = false,
             disableWebViewCache = false,
             appearance = appearance,
+            storefront = storefront,
             presentationStyle = presentationStyle
         )
         return mapFlowLaunchResult(raw)
@@ -133,11 +182,19 @@ object Paygate {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val gr = gates ?: throw PaygateException.NotInitialized
 
+        val channel = currentChannel(activity)
+        // Never block the launch on Play — see BillingManager.currentStorefront.
+        val storefront = currentStorefront()
+        val gateKey = cacheKey(gateId, storefront)
+
         val response: GateFlowResponse = try {
             withContext(Dispatchers.IO) {
-                gateCache[gateId] ?: gr.getGate(gateId).also { fetched ->
-                    if (fetched.launchCache == "cache_on_first_launch") {
-                        gateCache[gateId] = fetched
+                gateCache[gateKey] ?: gr.getGate(gateId, storefront).also { fetched ->
+                    // Caching is decided by this build's channel, so a debug
+                    // build set to refresh re-fetches while the shipped app
+                    // still caches.
+                    if (fetched.gate.launchCacheOn(channel) == PaygateLaunchCache.CACHE_ON_FIRST_LAUNCH) {
+                        gateCache[gateKey] = fetched
                     }
                 }
             }
@@ -151,11 +208,8 @@ object Paygate {
             )
         }
 
-        if (response.enabledChannels.isNotEmpty()) {
-            val current = channelApiValue(currentChannel(activity))
-            if (!response.enabledChannels.contains(current)) {
-                return PaygateLaunchResult(PaygateLaunchStatus.CHANNEL_NOT_ENABLED)
-            }
+        if (!response.gate.isEnabledOn(channel)) {
+            return PaygateLaunchResult(PaygateLaunchStatus.CHANNEL_NOT_ENABLED)
         }
 
         val flowData = response.flowData
@@ -177,11 +231,12 @@ object Paygate {
             bounces = bounces,
             gateId = gateId,
             purchaseRequired = response.requirePurchase,
-            disableWebViewCache = response.launchCache == "refresh_on_launch",
+            disableWebViewCache = response.gate.launchCacheOn(channel) == PaygateLaunchCache.REFRESH_ON_LAUNCH,
             // The caller wins. Only the app knows whether it has a theme
             // setting of its own; the gate's value is a default for those
             // that do not.
             appearance = appearance ?: response.appearance,
+            storefront = storefront,
             presentationStyle = presentationStyle
         )
         return mapGateLaunchResult(raw)
@@ -206,6 +261,7 @@ object Paygate {
         purchaseRequired: Boolean,
         disableWebViewCache: Boolean,
         appearance: PaygateAppearance,
+        storefront: String?,
         @Suppress("UNUSED_PARAMETER") presentationStyle: PaygatePresentationStyle
     ): PaygateResult = withContext(Dispatchers.Main) {
         coroutineScope {
@@ -221,7 +277,8 @@ object Paygate {
                 gateId = gateId,
                 purchaseRequired = purchaseRequired,
                 disableWebViewCache = disableWebViewCache,
-                appearance = appearance
+                appearance = appearance,
+                storefront = storefront
             )
             // TODO: sheet vs fullScreen — Android uses single Activity theme; host may wrap in BottomSheet if needed.
             activity.startActivity(intent)

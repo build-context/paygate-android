@@ -35,6 +35,8 @@ class PaygateActivity : Activity() {
     private var purchaseRequired: Boolean = false
     private var disableWebViewCache: Boolean = false
     private var appearance: PaygateAppearance = PaygateAppearance.SYSTEM
+    /** Store country this flow's prices were resolved for, when known. */
+    private var storefront: String? = null
     private var didComplete: Boolean = false
 
     private var eventBuffer: PresentationEventBuffer? = null
@@ -101,7 +103,8 @@ class PaygateActivity : Activity() {
                 flowId = flowData.id,
                 apiKey = apiKey,
                 baseURL = baseURL,
-                appContext = applicationContext
+                appContext = applicationContext,
+                storefront = storefront
             )
         }
 
@@ -153,6 +156,7 @@ class PaygateActivity : Activity() {
         purchaseRequired = b.getBoolean(EXTRA_PURCHASE_REQUIRED, false)
         disableWebViewCache = b.getBoolean(EXTRA_DISABLE_CACHE, false)
         appearance = PaygateAppearance.fromServerValue(b.getString(EXTRA_APPEARANCE))
+        storefront = b.getString(EXTRA_STOREFRONT)
         val flowJson = b.getString(EXTRA_FLOW_JSON) ?: return false
         flowData = try {
             parseFlowData(JSONObject(flowJson))
@@ -362,6 +366,7 @@ class PaygateActivity : Activity() {
         const val EXTRA_PURCHASE_REQUIRED = "paygate_purchase_required"
         const val EXTRA_DISABLE_CACHE = "paygate_disable_cache"
         const val EXTRA_APPEARANCE = "paygate_appearance"
+        const val EXTRA_STOREFRONT = "paygate_storefront"
         const val EXTRA_FLOW_JSON = "paygate_flow_json"
 
         fun createIntent(
@@ -373,7 +378,8 @@ class PaygateActivity : Activity() {
             gateId: String?,
             purchaseRequired: Boolean,
             disableWebViewCache: Boolean,
-            appearance: PaygateAppearance = PaygateAppearance.SYSTEM
+            appearance: PaygateAppearance = PaygateAppearance.SYSTEM,
+            storefront: String? = null
         ): Intent {
             return Intent(activity, PaygateActivity::class.java).apply {
                 putExtra(EXTRA_API_KEY, apiKey)
@@ -383,6 +389,7 @@ class PaygateActivity : Activity() {
                 putExtra(EXTRA_PURCHASE_REQUIRED, purchaseRequired)
                 putExtra(EXTRA_DISABLE_CACHE, disableWebViewCache)
                 putExtra(EXTRA_APPEARANCE, appearance.name)
+                putExtra(EXTRA_STOREFRONT, storefront)
                 putExtra(EXTRA_FLOW_JSON, flowData.toJsonObject().toString())
             }
         }

@@ -6,6 +6,7 @@ import com.android.billingclient.api.AcknowledgePurchaseParams
 import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.GetBillingConfigParams
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
@@ -238,6 +239,40 @@ class BillingManager private constructor(private val appContext: Context) {
             if (found != null) return found
         }
         return null
+    }
+
+    /**
+     * The reader's Play store country, e.g. "CA" — null when Play has not
+     * answered.
+     *
+     * Needs a connected BillingClient, so it returns null rather than waiting
+     * when one is not up yet. **Callers must never block a gate launch on
+     * this**: the server falls back to the template's key, and a paywall that
+     * renders late is worse than one showing the fallback price.
+     *
+     * Not cached. A user can change their Play country mid-session, and a stale
+     * value here prices the paywall for a country they have left.
+     */
+    suspend fun currentStorefront(): String? {
+        val c = client ?: return null
+        if (!c.isReady) return null
+        return try {
+            suspendCancellableCoroutine { cont ->
+                c.getBillingConfigAsync(GetBillingConfigParams.newBuilder().build()) { result, config ->
+                    val code =
+                        if (result.responseCode == BillingClient.BillingResponseCode.OK) {
+                            config?.countryCode?.takeIf { it.isNotBlank() }
+                        } else {
+                            null
+                        }
+                    if (cont.isActive) cont.resume(code)
+                }
+            }
+        } catch (_: Exception) {
+            // Never fail a launch over a price hint. Falls back to the
+            // template's key, which is what renders today.
+            null
+        }
     }
 
     companion object {

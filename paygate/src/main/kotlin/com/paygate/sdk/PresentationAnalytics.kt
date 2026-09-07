@@ -15,7 +15,8 @@ internal class PresentationEventBuffer(
     private val flowId: String,
     private val apiKey: String,
     private val baseURL: String,
-    private val appContext: android.content.Context
+    private val appContext: android.content.Context,
+    private val storefront: String?
 ) {
     private val lock = Any()
     private var pending: PendingPresentation
@@ -30,6 +31,7 @@ internal class PresentationEventBuffer(
             openedAt = openedAt,
             closedAt = null,
             dismissReason = null,
+            storefront = storefront,
             events = mutableListOf(
                 PresentationEvent(
                     eventType = "gate_opened",

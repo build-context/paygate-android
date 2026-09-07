@@ -15,7 +15,8 @@ internal open class PaygateRepository(
     protected val appContext: android.content.Context
 ) {
 
-    protected fun getJson(path: String): JSONObject {
+    /** @param storefront store country to price this render for, when known. */
+    protected fun getJson(path: String, storefront: String? = null): JSONObject {
         val trimmed = baseURL.trimEnd('/')
         val url = URL("$trimmed$path")
         val conn = url.openConnection() as HttpURLConnection
@@ -23,6 +24,7 @@ internal open class PaygateRepository(
         conn.connectTimeout = 30_000
         conn.readTimeout = 30_000
         PaygateHTTP.applyDefaultHeaders(conn, apiKey, appContext)
+        PaygateHTTP.applyStorefront(conn, storefront)
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
         val body = stream?.use { ins ->
