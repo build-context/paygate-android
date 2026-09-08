@@ -238,6 +238,11 @@ class PaygateActivity : Activity() {
                 try {
                     val o = JSONObject(json)
                     val action = o.optString("action", "")
+                    // Every button in a flow arrives here. Traced because the
+                    // shim that feeds it swallows its own errors — without this
+                    // line there is no way to tell a tap that never reached the
+                    // bridge from one that reached it and did nothing.
+                    android.util.Log.d("Paygate", "bridge action: $action")
                     when (action) {
                         "close" -> handleClose(o)
                         "skip" -> handleSkip(o)
@@ -301,8 +306,19 @@ class PaygateActivity : Activity() {
                         )
                     }
                     finishWith(PaygateResult.Purchased(purchased, data))
+                } else {
+                    // A cancellation, and now only that — `purchase` throws for
+                    // everything else. The paywall deliberately stays up: they
+                    // closed Play's sheet, not this screen, and taking the offer
+                    // away would be the wrong reading of a shrug.
+                    //
+                    // Logged all the same, because "nothing happened" is what a
+                    // broken purchase and a declined one look like from the
+                    // outside, and this line is what tells them apart.
+                    android.util.Log.i("Paygate", "purchase($productId) cancelled by the user")
                 }
             } catch (e: Exception) {
+                android.util.Log.e("Paygate", "purchase($productId) failed", e)
                 finishWith(PaygateResult.Error(e))
             }
         }

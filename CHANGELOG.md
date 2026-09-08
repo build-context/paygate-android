@@ -1,3 +1,28 @@
+## 0.5.1
+
+- **Fix: tapping Buy could do nothing at all, forever, with nothing in the log.**
+  `queryProductDetailsAsync` does not always call its listener — a client that
+  reports `isReady` can still have its query silently dropped by Play, and
+  `suspendCancellableCoroutine` then waited for a callback that was never
+  coming. The purchase never failed, so nothing was ever reported: the paywall
+  just sat there. Product lookups now time out after 8s and raise
+  `PaygateException.BillingUnavailable`.
+- **Four other silent paths made loud.** `purchase()` returned a bare `null`
+  when the BillingClient was missing and when `launchBillingFlow` refused,
+  `PurchasesUpdatedListener` mapped every billing error onto the same `null` as
+  a user cancellation, and `handlePurchase` had no `else` at all. A failed
+  purchase was indistinguishable from a declined one and from a dead button.
+- **`null` from `purchase()` now means a user cancellation and nothing else.**
+  Every other outcome throws, so the host app gets a `PaygateResult.Error` it
+  can act on rather than silence. A cancellation still leaves the paywall up,
+  which is correct — they closed Play's sheet, not your screen.
+- Response codes are logged by name, with the two that actually happen spelled
+  out: `DEVELOPER_ERROR` (a locally-signed build of an app on Play App Signing)
+  and `ITEM_UNAVAILABLE` (product not live for that account, country or track).
+- Bridge actions are traced at debug level. The shim that feeds the bridge
+  swallows its own errors, so without it there was no way to tell a tap that
+  never arrived from one that arrived and did nothing.
+
 ## 0.5.0
 
 - **Breaking.** `DistributionChannel.TESTFLIGHT` is now

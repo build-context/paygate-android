@@ -250,6 +250,28 @@ sealed class PaygateException(message: String, cause: Throwable? = null) : Excep
     )
     object NoActivity : PaygateException("No Activity available to present from.")
     object ProductNotFound : PaygateException("Product not found on Google Play.")
+
+    /**
+     * Google Play refused to open the purchase sheet.
+     *
+     * Distinct from the user closing it: this means the flow never started, so
+     * there is nothing for them to have cancelled. The most common causes are a
+     * build Play does not recognise (a debug or locally-signed APK of an app
+     * distributed through Play App Signing) and a product that is not live on
+     * the account's country or track.
+     *
+     * Carries Play's own response code and debug message, because "it did
+     * nothing" is otherwise indistinguishable from a cancel — which is exactly
+     * how this failed silently before.
+     */
+    data class BillingUnavailable(val responseCode: Int?, val detail: String?) : PaygateException(
+        buildString {
+            append("Google Play could not start the purchase")
+            if (responseCode != null) append(" (response code $responseCode)")
+            detail?.takeIf { it.isNotBlank() }?.let { append(": $it") }
+            append(".")
+        }
+    )
     data class PresentationLimitExceeded(val used: Int?, val limit: Int?) : PaygateException(
         buildString {
             append("Presentation limit reached for this billing period.")

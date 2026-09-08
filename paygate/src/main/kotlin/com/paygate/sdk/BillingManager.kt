@@ -20,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
@@ -56,8 +57,24 @@ class BillingManager private constructor(private val appContext: Context) {
                         pending.complete(null)
                     }
                 }
+                // The one null that means what it says: they saw the sheet and
+                // closed it. Left silent on purpose — it is not a fault, and
+                // the paywall correctly stays up behind it.
                 BillingClient.BillingResponseCode.USER_CANCELED -> pending.complete(null)
-                else -> pending.complete(null)
+                else -> {
+                    // Everything else is a failure wearing a cancellation's
+                    // clothes. Still completed as null so the caller unblocks
+                    // and the paywall stays up to retry from, but no longer
+                    // invisible: this is the only trace a purchase that died
+                    // inside Play's own sheet ever leaves.
+                    android.util.Log.e(
+                        "Paygate",
+                        "Purchase failed in the Play sheet: " +
+                            "${describeBillingCode(billingResult.responseCode)} (${billingResult.responseCode})" +
+                            (billingResult.debugMessage?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: "")
+                    )
+                    pending.complete(null)
+                }
             }
         } else {
             purchases?.forEach { acknowledgeIfNeeded(it) }
@@ -183,8 +200,27 @@ class BillingManager private constructor(private val appContext: Context) {
         return (candidates.firstOrNull { it.offerId == null } ?: candidates.first()).offerToken
     }
 
+    /**
+     * Buys [storeProductId], returning the purchased product id — or **null for
+     * a user cancellation, and only that**.
+     *
+     * Every other outcome throws. That distinction is the whole point: a null
+     * used to mean "cancelled, or billing was never started, or Play refused to
+     * open the sheet", and the caller cannot tell those apart. It left a reader
+     * tapping Buy and getting nothing at all — no sheet, no error, no log —
+     * which is indistinguishable from a dead button.
+     */
     suspend fun purchase(activity: Activity, storeProductId: String, basePlanId: String? = null): String? {
-        val c = client ?: return null
+        val c = client ?: run {
+            // `start()` assigns the client synchronously, so this means
+            // initialize() never ran or failed — not a transient state worth
+            // retrying, and never the user's doing.
+            android.util.Log.e(
+                "Paygate",
+                "purchase($storeProductId) with no BillingClient — Paygate.initialize() did not complete."
+            )
+            throw PaygateException.BillingUnavailable(null, "Billing was never started")
+        }
         val details = queryProductDetails(c, storeProductId) ?: run {
             android.util.Log.e("Paygate", "No ProductDetails for $storeProductId")
             throw PaygateException.ProductNotFound
@@ -210,12 +246,72 @@ class BillingManager private constructor(private val appContext: Context) {
         val result = c.launchBillingFlow(activity, flowParams)
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {
             purchaseCompleter = null
-            return null
+            // The sheet never opened, so there is nothing the user cancelled.
+            // Returning null here was the single most confusing failure in this
+            // SDK: the paywall sat there having visibly done nothing, with no
+            // log and no result, on the one tap that matters.
+            android.util.Log.e(
+                "Paygate",
+                "launchBillingFlow refused $storeProductId: ${describeBillingCode(result.responseCode)} " +
+                    "(${result.responseCode})${result.debugMessage?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: ""}"
+            )
+            throw PaygateException.BillingUnavailable(result.responseCode, result.debugMessage)
         }
         return deferred.await()
     }
 
+    /**
+     * Play's response codes, named.
+     *
+     * The integer alone sends a reader to a documentation page mid-debug, and
+     * the two that actually happen here — a build Play does not recognise, and
+     * a product that is not live for this account — look identical as bare
+     * numbers.
+     */
+    private fun describeBillingCode(code: Int): String = when (code) {
+        BillingClient.BillingResponseCode.BILLING_UNAVAILABLE ->
+            "BILLING_UNAVAILABLE (Play does not recognise this build, or the account cannot pay here)"
+        BillingClient.BillingResponseCode.DEVELOPER_ERROR ->
+            "DEVELOPER_ERROR (usually a signature mismatch — a locally-signed build of an app on Play App Signing)"
+        BillingClient.BillingResponseCode.ITEM_UNAVAILABLE ->
+            "ITEM_UNAVAILABLE (product not live for this account, country or track)"
+        BillingClient.BillingResponseCode.SERVICE_DISCONNECTED -> "SERVICE_DISCONNECTED"
+        BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE -> "SERVICE_UNAVAILABLE"
+        BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED -> "ITEM_ALREADY_OWNED"
+        BillingClient.BillingResponseCode.FEATURE_NOT_SUPPORTED -> "FEATURE_NOT_SUPPORTED"
+        BillingClient.BillingResponseCode.USER_CANCELED -> "USER_CANCELED"
+        else -> "response code $code"
+    }
+
+    /**
+     * How long to wait for Play to answer a product query.
+     *
+     * There is a timeout at all because `queryProductDetailsAsync` does not
+     * always call its listener. A client that never finished connecting drops
+     * the callback entirely, and `suspendCancellableCoroutine` then waits for
+     * it forever — which is not a slow purchase, it is a Buy button that does
+     * nothing for the rest of the process, with nothing in the log to say so.
+     *
+     * Eight seconds is far past a healthy round trip (tens of milliseconds) and
+     * still short enough that a reader who tapped Buy gets an answer rather
+     * than a dead screen.
+     */
+    private val queryTimeoutMs = 8_000L
+
     private suspend fun queryProductDetails(c: BillingClient, productId: String): ProductDetails? {
+        // Play's own precondition, checked rather than assumed. `start()`
+        // assigns the client synchronously and connects asynchronously, so a
+        // client can be non-null and unusable — the state this whole timeout
+        // exists to survive. Saying so is better than waiting to find out.
+        if (!c.isReady) {
+            android.util.Log.e(
+                "Paygate",
+                "BillingClient is not connected; cannot look up $productId. " +
+                    "Play refused the connection at startup — on a debug or locally-signed " +
+                    "build of an app distributed through Play App Signing, that is expected."
+            )
+            throw PaygateException.BillingUnavailable(null, "Billing service not connected")
+        }
         for (type in listOf(BillingClient.ProductType.SUBS, BillingClient.ProductType.INAPP)) {
             val params = QueryProductDetailsParams.newBuilder()
                 .setProductList(
@@ -227,14 +323,34 @@ class BillingManager private constructor(private val appContext: Context) {
                     )
                 )
                 .build()
-            val found = suspendCancellableCoroutine { cont ->
-                c.queryProductDetailsAsync(params) { billingResult, list ->
-                    if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && list.isNotEmpty()) {
-                        cont.resume(list.first())
-                    } else {
-                        cont.resume(null)
+            val found = withTimeoutOrNull(queryTimeoutMs) {
+                suspendCancellableCoroutine<ProductDetails?> { cont ->
+                    c.queryProductDetailsAsync(params) { billingResult, list ->
+                        // `isActive` because the timeout may already have moved
+                        // on; resuming a cancelled continuation throws.
+                        if (!cont.isActive) return@queryProductDetailsAsync
+                        if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && list.isNotEmpty()) {
+                            cont.resume(list.first())
+                        } else {
+                            if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
+                                android.util.Log.w(
+                                    "Paygate",
+                                    "queryProductDetails($productId, $type): " +
+                                        "${describeBillingCode(billingResult.responseCode)} (${billingResult.responseCode})"
+                                )
+                            }
+                            cont.resume(null)
+                        }
                     }
                 }
+            } ?: run {
+                // Play never answered. Distinct from "no such product", and the
+                // failure that used to hang here forever.
+                android.util.Log.e(
+                    "Paygate",
+                    "Play did not answer queryProductDetails($productId, $type) within ${queryTimeoutMs}ms."
+                )
+                throw PaygateException.BillingUnavailable(null, "Play did not answer the product lookup")
             }
             if (found != null) return found
         }
