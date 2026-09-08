@@ -3,10 +3,43 @@ package com.paygate.sdk
 /** Date-based API version; must match backend supported `Paygate-Version`. */
 const val PAYGATE_API_VERSION = "2026-09-07"
 
+/**
+ * Which kind of build this is, as far as a gate's per-channel settings care.
+ *
+ * Three, and deliberately not one per store. [TESTING] was called `testflight`
+ * until this SDK could take money and the name stopped being true — Play has no
+ * TestFlight, so an Android build could never match that entry and the setting
+ * was unreachable from half the clients. The server no longer sends or accepts
+ * the old name.
+ */
 enum class DistributionChannel(val apiValue: String) {
+    /** A shipped build, installed from Play (or the App Store on iOS). */
     PRODUCTION("production"),
-    TESTFLIGHT("testflight"),
-    DEBUG("debug")
+
+    /**
+     * A build under test.
+     *
+     * On iOS that is TestFlight, which the OS makes plain. On Android it is
+     * whatever [Paygate.channelOverride] says, or failing that a release build
+     * that did not come from Play — see [Paygate.currentChannel] for why that
+     * is the best inference available.
+     */
+    TESTING("testing"),
+
+    /** A debuggable build: `FLAG_DEBUGGABLE` here, `#if DEBUG` on iOS. */
+    DEBUG("debug");
+
+    companion object {
+        /**
+         * Parses a server value, or null for one this build does not know.
+         *
+         * Null rather than a default, because the callers want opposite things
+         * from an unrecognized channel and neither wants a guess.
+         */
+        @JvmStatic
+        fun fromServerValue(raw: String?): DistributionChannel? =
+            entries.firstOrNull { it.apiValue == raw?.lowercase() }
+    }
 }
 
 /**

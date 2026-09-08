@@ -3,6 +3,7 @@ package com.paygate.sdk
 import android.app.Activity
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.os.Build
 import com.paygate.sdk.repository.FlowRepository
 import com.paygate.sdk.repository.GateRepository
 import com.paygate.sdk.repository.ProductRepository
@@ -84,12 +85,99 @@ object Paygate {
         // The platform is constant within a build, so it adds nothing here.
         "$id|${storefront ?: "-"}"
 
-    /** Current distribution channel, for the gate's per-channel settings. */
+    /**
+     * Force the distribution channel, whatever this build actually is.
+     *
+     * **This is the only reliable way to mark an Android build as `testing`,**
+     * and the reason it exists. Play does not tell an installed app which track
+     * served it: internal testing, closed, open and production all report the
+     * same installer, and there is no track API. iOS has no such problem — a
+     * TestFlight install carries a `sandboxReceipt` — so the asymmetry is
+     * Google's, not this SDK's.
+     *
+     * An app therefore has to say so from something it knows at build time: a
+     * build flavor, a `BuildConfig` field, a `--dart-define`. Set it before
+     * [launchGate].
+     *
+     * Unlike [storefrontOverride] this is **not** refused in production. It
+     * selects among your own gate settings; it cannot reprice anything, and it
+     * cannot reveal a paywall a gate has switched off.
+     */
+    @JvmStatic
+    var channelOverride: DistributionChannel? = null
+
+    /**
+     * Current distribution channel, for the gate's per-channel settings.
+     *
+     * In order:
+     *
+     * 1. [channelOverride], because an app that knows what it shipped is a
+     *    better authority than anything inferred here.
+     * 2. `FLAG_DEBUGGABLE` → [DistributionChannel.DEBUG].
+     * 3. A release build that **did not come from Play** →
+     *    [DistributionChannel.TESTING]. Sideloaded, `adb install`, a locally
+     *    built AAB or APK: whatever it is, it is not a member of the public who
+     *    installed your app from the store, and treating it as production is
+     *    how a developer ends up staring at a cached paywall wondering why
+     *    their console edit did not take.
+     * 4. Otherwise [DistributionChannel.PRODUCTION].
+     *
+     * **Step 3 cannot see a Play testing track**, and no API can — an internal
+     * testing install reports `com.android.vending` exactly like a production
+     * one. That case needs [channelOverride]; this step only rules out the
+     * builds Play never touched.
+     *
+     * Fails toward `PRODUCTION`: if the installer cannot be read at all, the
+     * safe reading is a shipped app, because that is the one where a wrong
+     * answer costs a user a network round trip in front of a purchase.
+     */
     @JvmStatic
     fun currentChannel(context: Context): DistributionChannel {
-        val debug =
-            (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        return if (debug) DistributionChannel.DEBUG else DistributionChannel.PRODUCTION
+        channelOverride?.let { return it }
+
+        val debuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable) return DistributionChannel.DEBUG
+
+        return if (installedFromPlay(context)) {
+            DistributionChannel.PRODUCTION
+        } else {
+            DistributionChannel.TESTING
+        }
+    }
+
+    /** Play's own package name, the installer on any store-delivered build. */
+    private const val PLAY_STORE_PACKAGE = "com.android.vending"
+
+    /**
+     * Whether Play delivered this install.
+     *
+     * `getInstallSourceInfo` replaced `getInstallerPackageName`, which is
+     * deprecated from API 30 and returns null on some newer devices rather than
+     * the answer it used to. Both are read, newest first.
+     *
+     * Any throw — `NameNotFoundException`, an OEM that restricts this, a
+     * SecurityException on a stricter profile — answers **true**. An install
+     * whose source cannot be determined is treated as a store install, which
+     * keeps the failure on the cautious side of the choice above.
+     */
+    private fun installedFromPlay(context: Context): Boolean {
+        val pm = context.packageManager
+        val name = context.packageName
+        return try {
+            val installer =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    pm.getInstallSourceInfo(name).installingPackageName
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getInstallerPackageName(name)
+                }
+            // Null means nothing recorded an installer — a sideload or an adb
+            // push. That is exactly the case step 3 is for, so it is not a
+            // read failure and must not take the catch's benefit of the doubt.
+            installer == PLAY_STORE_PACKAGE
+        } catch (_: Throwable) {
+            true
+        }
     }
 
     /**

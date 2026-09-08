@@ -1,3 +1,34 @@
+## 0.5.0
+
+- **Breaking.** `DistributionChannel.TESTFLIGHT` is now
+  `DistributionChannel.TESTING`, and the wire value is `testing`. It was an
+  Apple brand name standing in for a platform-neutral idea, and it was never
+  reachable from Android at all: this SDK only ever computed `PRODUCTION` or
+  `DEBUG`, so a gate's TestFlight settings applied to nobody here.
+- **`currentChannel` can now return `TESTING`.** A release build whose installer
+  is not Play — sideloaded, `adb install`, a locally built AAB — is a build
+  under test rather than a member of the public, and reporting it as production
+  is why a console edit looked like it had not taken: production caches, so the
+  paywall was fetched once and reused for the process.
+- **`Paygate.channelOverride` sets the channel explicitly, and wins over
+  everything.** This is the only way to mark a **Play internal/closed/open
+  testing** build, because Play tells an installed app nothing about which track
+  served it — every track reports `com.android.vending`, exactly like
+  production, and there is no track API. iOS has no such problem (a TestFlight
+  install carries a `sandboxReceipt`), so the asymmetry is Google's. Set it from
+  something known at build time: a flavor, a `BuildConfig` field.
+- Unlike `storefrontOverride`, `channelOverride` is **not** refused in
+  production. It selects among your own gate settings; it cannot reprice
+  anything, and it cannot reveal a paywall a gate has switched off.
+- Install-source detection fails toward `PRODUCTION`: if the installer cannot be
+  read (an OEM restriction, a stricter profile), the safe reading is a shipped
+  app. A null installer is *not* a read failure — that is a genuine sideload,
+  and it reports `TESTING`.
+- Requires an API deployed on or after this release. An older API serves
+  `testflight`, which this build no longer matches; the gate then falls back to
+  shown-and-cached rather than hidden, so a version skew costs refresh-on-launch
+  and never a sale.
+
 ## 0.4.0
 
 - **Breaking.** `GateData.enabledChannels` and `GateData.launchCache` are gone,
