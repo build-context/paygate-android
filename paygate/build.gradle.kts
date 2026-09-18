@@ -43,7 +43,25 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
-    implementation("com.android.billingclient:billing-ktx:7.1.1")
+    // **8.0.0 is a floor, not a preference — do not lower it.**
+    //
+    // `ProductDetailsResponseListener` is binary-incompatible between 7 and 8:
+    //
+    //   7.1.1  onProductDetailsResponse(BillingResult, List<ProductDetails>)
+    //   8.0.0  onProductDetailsResponse(BillingResult, QueryProductDetailsResult)
+    //
+    // Gradle resolves a conflict by taking the *highest* version, so any host
+    // app that also depends on Billing 8 — every app using `in_app_purchase`
+    // 0.5.x, which requires exactly 8.0.0 — puts 8 on the classpath regardless
+    // of what this module compiled against. A lambda compiled against 7.1.1
+    // then implements a method the 8.0.0 client never calls, and the callback
+    // dies with AbstractMethodError somewhere inside Play's own thread.
+    //
+    // The symptom is not a crash. `queryProductDetails` simply never resumes,
+    // its 8-second timeout fires, and the reader who tapped Buy watches the
+    // paywall sit still and then close. That shipped, and it is why this is
+    // pinned forward rather than left to resolution.
+    implementation("com.android.billingclient:billing-ktx:8.0.0")
 }
 
 /**

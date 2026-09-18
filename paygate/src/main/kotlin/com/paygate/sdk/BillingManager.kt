@@ -96,17 +96,16 @@ class BillingManager private constructor(private val appContext: Context) {
         val c = BillingClient.newBuilder(appContext)
             .setListener(purchasesUpdatedListener)
             // The no-arg `enablePendingPurchases()` was deprecated in Billing 6.2
-            // and **removed in 8.0.0**. Calling it is not a compile error here —
-            // this module builds against 7.1.1, where it still exists — it is a
-            // `NoSuchMethodError` that kills the app's main thread at
-            // `Paygate.initialize`, and only in host apps that drag a newer
-            // billing library onto the classpath. Any app also using
-            // `in_app_purchase` does: its Android package requires 8.0.0, Gradle
-            // resolves to the highest, and this SDK gets a BillingClient.Builder
-            // that no longer has the method it was compiled against.
+            // and **removed in 8.0.0**. The params form is the only one now —
+            // this module compiles against 8.0.0, so the old call would not
+            // build rather than failing at runtime the way it used to.
             //
-            // The params form exists from 6.2 onward, so it compiles here and
-            // works on 7 and 8 alike.
+            // Keeping the history because it is the same trap the product-query
+            // listener fell into: this SDK used to compile against 7.1.1 while
+            // host apps resolved 8, so a method that existed at compile time was
+            // gone at runtime. That one surfaced as a `NoSuchMethodError` on the
+            // main thread at `Paygate.initialize`; the listener's was silent.
+            // Pinning the dependency forward is what closes the whole class.
             .enablePendingPurchases(
                 PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()
             )
@@ -325,10 +324,25 @@ class BillingManager private constructor(private val appContext: Context) {
                 .build()
             val found = withTimeoutOrNull(queryTimeoutMs) {
                 suspendCancellableCoroutine<ProductDetails?> { cont ->
-                    c.queryProductDetailsAsync(params) { billingResult, list ->
+                    // **The second parameter is `QueryProductDetailsResult`, and
+                    // that is load-bearing.** Billing 8.0.0 changed this
+                    // listener's signature from `List<ProductDetails>`, and the
+                    // change is binary-incompatible: a lambda compiled against
+                    // 7.1.1 is simply not an implementation of the 8.x
+                    // interface, so Play's client calls a method that is not
+                    // there and the callback dies with AbstractMethodError on
+                    // its own thread.
+                    //
+                    // Nothing surfaces. The continuation is never resumed, the
+                    // timeout below fires eight seconds later, and the reader
+                    // who tapped Buy sees the paywall stall and close. See the
+                    // dependency note in build.gradle.kts for why the host app
+                    // decides which version is on the classpath.
+                    c.queryProductDetailsAsync(params) { billingResult, queryResult ->
                         // `isActive` because the timeout may already have moved
                         // on; resuming a cancelled continuation throws.
                         if (!cont.isActive) return@queryProductDetailsAsync
+                        val list = queryResult.productDetailsList
                         if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && list.isNotEmpty()) {
                             cont.resume(list.first())
                         } else {
@@ -338,6 +352,20 @@ class BillingManager private constructor(private val appContext: Context) {
                                     "queryProductDetails($productId, $type): " +
                                         "${describeBillingCode(billingResult.responseCode)} (${billingResult.responseCode})"
                                 )
+                            } else {
+                                // OK with nothing in it. Play now says *why* per
+                                // product, and it is the difference between "no
+                                // such product" and "this product exists but is
+                                // not purchasable for you" — which used to be
+                                // the same empty list.
+                                val unfetched = queryResult.unfetchedProductList
+                                if (unfetched.isNotEmpty()) {
+                                    android.util.Log.w(
+                                        "Paygate",
+                                        "queryProductDetails($productId, $type): Play returned OK but did not " +
+                                            "fetch it — $unfetched"
+                                    )
+                                }
                             }
                             cont.resume(null)
                         }

@@ -1,3 +1,30 @@
+## 0.5.2
+
+- **Fix: tapping Buy did nothing in any app that also uses Play Billing 8.**
+  This SDK compiled against Billing 7.1.1, but `ProductDetailsResponseListener`
+  changed incompatibly in 8.0.0:
+
+      7.1.1  onProductDetailsResponse(BillingResult, List<ProductDetails>)
+      8.0.0  onProductDetailsResponse(BillingResult, QueryProductDetailsResult)
+
+  Gradle resolves a version conflict by taking the highest, so any host app
+  depending on Billing 8 — every app using Flutter's `in_app_purchase` 0.5.x,
+  which requires exactly 8.0.0 — put 8 on the classpath no matter what this
+  module was built against. The compiled lambda was then not an implementation
+  of the interface the client invoked, and the callback died with
+  `AbstractMethodError` inside Play's own thread.
+
+  Nothing surfaced: no throw on any thread the SDK owns, so 0.5.1's new
+  8-second timeout was the only thing that fired, and the reader who tapped Buy
+  watched the paywall stall and close. It reads exactly like a dead button, and
+  it sends you to Play Console to hunt a product that was never missing.
+
+  `billing-ktx` is now pinned to **8.0.0** — a floor, not a preference. Lowering
+  it reintroduces the same trap in the other direction.
+- Product lookups log `unfetchedProductList` when Play answers OK with an empty
+  list. Billing 8 says *why* per product, which separates "no such product"
+  from "exists but is not purchasable for you" — previously the same empty list.
+
 ## 0.5.1
 
 - **Fix: tapping Buy could do nothing at all, forever, with nothing in the log.**
