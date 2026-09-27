@@ -1,4 +1,4 @@
-## Unreleased
+## 0.5.3
 
 - **Fix: Buy failed with "Billing service not connected" after Play dropped
   the connection.** The client connected once at `initialize` and nothing ever
