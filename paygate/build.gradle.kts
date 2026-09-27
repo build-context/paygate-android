@@ -33,6 +33,12 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        // android.util.Log is a stub on the JVM; without this every log line
+        // in the code under test throws "Method ... not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
+
     publishing {
         singleVariant("release") {
             withSourcesJar()
@@ -62,6 +68,10 @@ dependencies {
     // paywall sit still and then close. That shipped, and it is why this is
     // pinned forward rather than left to resolution.
     implementation("com.android.billingclient:billing-ktx:8.0.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("io.mockk:mockk:1.13.10")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
 }
 
 /**

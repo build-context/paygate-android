@@ -109,18 +109,103 @@ class BillingManager private constructor(private val appContext: Context) {
             .enablePendingPurchases(
                 PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()
             )
+            // **Play drops this connection in the normal course of things** — a
+            // Play Store self-update, the process sitting in the background, the
+            // service being reclaimed under memory pressure. Without this, one
+            // drop left the client disconnected for the rest of the process:
+            // nothing reconnected it, and every Buy tap after that failed with
+            // "Billing service not connected" until the app was killed. With it
+            // (Billing 8.0.0+), Play re-establishes the connection itself when
+            // the next call is made on a dropped client.
+            .enableAutoServiceReconnection()
             .build()
         client = c
+        connect(c)
+    }
+
+    private val connectLock = Any()
+
+    /** The in-flight `startConnection`, so two callers never start two. */
+    private var connecting: CompletableDeferred<BillingResult>? = null
+
+    /**
+     * Starts a connection, or joins the one already under way.
+     *
+     * Joined rather than restarted because Play answers a second
+     * `startConnection` during `CONNECTING` with DEVELOPER_ERROR — a retry
+     * racing the connection at launch would fail the very tap it was for.
+     */
+    internal fun connect(c: BillingClient): CompletableDeferred<BillingResult> = synchronized(connectLock) {
+        connecting?.takeIf { it.isActive }?.let { return it }
+        val result = CompletableDeferred<BillingResult>()
+        connecting = result
         c.startConnection(object : BillingClientStateListener {
             override fun onBillingSetupFinished(billingResult: BillingResult) {
+                result.complete(billingResult)
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     scope.launch(Dispatchers.IO) { refreshEntitlements() }
+                } else {
+                    android.util.Log.w(
+                        "Paygate",
+                        "Play Billing setup failed: ${describeBillingCode(billingResult.responseCode)} " +
+                            "(${billingResult.responseCode})" +
+                            (billingResult.debugMessage?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: "")
+                    )
                 }
             }
 
             override fun onBillingServiceDisconnected() {
+                // Auto-reconnection brings it back on the next call, and
+                // [ensureConnected] covers a purchase that lands first. Logged
+                // because a drop is the one event that explains a later failure.
+                android.util.Log.w("Paygate", "Play Billing service disconnected")
+                result.complete(
+                    BillingResult.newBuilder()
+                        .setResponseCode(BillingClient.BillingResponseCode.SERVICE_DISCONNECTED)
+                        .build()
+                )
             }
         })
+        result
+    }
+
+    /**
+     * How long a purchase waits for a dropped connection to come back.
+     *
+     * A healthy reconnect is well under a second. This is the ceiling for a
+     * slow device, short enough that a tap still gets an answer.
+     */
+    private val connectTimeoutMs = 5_000L
+
+    /**
+     * Makes sure [c] is connected before a purchase uses it, reconnecting if it
+     * is not, and throws with Play's own reason when it cannot be.
+     *
+     * This is what used to be a bare `isReady` check that threw on the spot. A
+     * client that had merely *dropped* — routine, see [start] — was treated
+     * like one Play had refused outright, so a reader who had the paywall open
+     * after a Play Store update could not buy at all.
+     */
+    internal suspend fun ensureConnected(c: BillingClient, forProductId: String) {
+        if (c.isReady) return
+        val setup = withTimeoutOrNull(connectTimeoutMs) { connect(c).await() }
+        if (c.isReady) return
+        // Still down, so Play genuinely refused — or never answered. The code is
+        // the diagnosis: BILLING_UNAVAILABLE is a device with no Play account
+        // (Play's pre-launch test devices are exactly this), DEVELOPER_ERROR a
+        // locally-signed build of an app on Play App Signing.
+        android.util.Log.e(
+            "Paygate",
+            "BillingClient could not connect; cannot look up $forProductId. " +
+                (setup?.let {
+                    "${describeBillingCode(it.responseCode)} (${it.responseCode})" +
+                        (it.debugMessage?.takeIf { m -> m.isNotBlank() }?.let { m -> " — $m" } ?: "")
+                } ?: "Play did not answer within ${connectTimeoutMs}ms")
+        )
+        throw PaygateException.BillingUnavailable(
+            setup?.responseCode,
+            setup?.debugMessage?.takeIf { it.isNotBlank() } ?: "Billing service not connected"
+        )
     }
 
     suspend fun loadPurchasedProducts() {
@@ -297,20 +382,16 @@ class BillingManager private constructor(private val appContext: Context) {
      */
     private val queryTimeoutMs = 8_000L
 
+    /** One answer from Play: the product, or null when Play has no such product. */
+    private class Lookup(val details: ProductDetails?)
+
     private suspend fun queryProductDetails(c: BillingClient, productId: String): ProductDetails? {
         // Play's own precondition, checked rather than assumed. `start()`
         // assigns the client synchronously and connects asynchronously, so a
         // client can be non-null and unusable — the state this whole timeout
-        // exists to survive. Saying so is better than waiting to find out.
-        if (!c.isReady) {
-            android.util.Log.e(
-                "Paygate",
-                "BillingClient is not connected; cannot look up $productId. " +
-                    "Play refused the connection at startup — on a debug or locally-signed " +
-                    "build of an app distributed through Play App Signing, that is expected."
-            )
-            throw PaygateException.BillingUnavailable(null, "Billing service not connected")
-        }
+        // exists to survive. A dropped client is reconnected here rather than
+        // refused; only one Play will not connect at all gets this far and fails.
+        ensureConnected(c, productId)
         for (type in listOf(BillingClient.ProductType.SUBS, BillingClient.ProductType.INAPP)) {
             val params = QueryProductDetailsParams.newBuilder()
                 .setProductList(
@@ -322,8 +403,12 @@ class BillingManager private constructor(private val appContext: Context) {
                     )
                 )
                 .build()
-            val found = withTimeoutOrNull(queryTimeoutMs) {
-                suspendCancellableCoroutine<ProductDetails?> { cont ->
+            // Wrapped, because `withTimeoutOrNull` answers null for a timeout
+            // *and* for a block that returns null. Bare, "Play has no such
+            // product" read as "Play never answered": the lookup threw the
+            // timeout's error and the INAPP pass below never ran.
+            val answer = withTimeoutOrNull(queryTimeoutMs) {
+                suspendCancellableCoroutine<Lookup> { cont ->
                     // **The second parameter is `QueryProductDetailsResult`, and
                     // that is load-bearing.** Billing 8.0.0 changed this
                     // listener's signature from `List<ProductDetails>`, and the
@@ -344,7 +429,7 @@ class BillingManager private constructor(private val appContext: Context) {
                         if (!cont.isActive) return@queryProductDetailsAsync
                         val list = queryResult.productDetailsList
                         if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && list.isNotEmpty()) {
-                            cont.resume(list.first())
+                            cont.resume(Lookup(list.first()))
                         } else {
                             if (billingResult.responseCode != BillingClient.BillingResponseCode.OK) {
                                 android.util.Log.w(
@@ -367,7 +452,7 @@ class BillingManager private constructor(private val appContext: Context) {
                                     )
                                 }
                             }
-                            cont.resume(null)
+                            cont.resume(Lookup(null))
                         }
                     }
                 }
@@ -380,7 +465,7 @@ class BillingManager private constructor(private val appContext: Context) {
                 )
                 throw PaygateException.BillingUnavailable(null, "Play did not answer the product lookup")
             }
-            if (found != null) return found
+            answer.details?.let { return it }
         }
         return null
     }

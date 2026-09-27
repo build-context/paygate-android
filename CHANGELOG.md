@@ -1,3 +1,24 @@
+## Unreleased
+
+- **Fix: Buy failed with "Billing service not connected" after Play dropped
+  the connection.** The client connected once at `initialize` and nothing ever
+  reconnected it, so a routine drop — a Play Store self-update, the service
+  reclaimed in the background — left every purchase failing until the app was
+  killed. The client now enables Play's automatic service reconnection
+  (Billing 8.0.0+), and a purchase that finds the client down reconnects and
+  waits up to 5 seconds instead of failing on the spot. Concurrent callers
+  share one connection attempt, since Play answers a second `startConnection`
+  during `CONNECTING` with DEVELOPER_ERROR.
+- A device Play genuinely refuses now fails with Play's own response code and
+  message (e.g. BILLING_UNAVAILABLE on a device with no Play account — Play's
+  pre-launch test devices are exactly this) rather than a bare "not connected".
+- **Fix: "no such product" was reported as "Play did not answer".**
+  `withTimeoutOrNull` returns null for a timeout *and* for a lookup that found
+  nothing, so a missing SUBS product threw the timeout's error and the INAPP
+  lookup never ran. One-time products could not be bought at all.
+- First unit tests for the SDK (`./gradlew :paygate:testReleaseUnitTest`),
+  covering the connection and lookup paths against a fake `BillingClient`.
+
 ## 0.5.2
 
 - **Fix: tapping Buy did nothing in any app that also uses Play Billing 8.**
