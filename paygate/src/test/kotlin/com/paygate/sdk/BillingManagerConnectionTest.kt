@@ -112,13 +112,52 @@ class BillingManagerConnectionTest {
         error as PaygateException.BillingUnavailable
         assertEquals(BillingResponseCode.BILLING_UNAVAILABLE, error.responseCode)
         assertEquals("Billing is unavailable for this account", error.detail)
+        // A verdict, not a hiccup: asked once, never retried.
+        assertEquals(1, listeners.size)
+    }
+
+    @Test
+    fun `a transient refusal is retried with backoff until Play connects`() = runTest {
+        val call = async { manager.ensureConnected(client, "premium_1") }
+        runCurrent()
+        listeners[0].onBillingSetupFinished(result(BillingResponseCode.SERVICE_UNAVAILABLE))
+
+        // Backs off a second before asking again, rather than hammering Play.
+        advanceTimeBy(999)
+        runCurrent()
+        assertEquals(1, listeners.size)
+        advanceTimeBy(2)
+        runCurrent()
+        assertEquals(2, listeners.size)
+
+        ready = true
+        listeners[1].onBillingSetupFinished(result(BillingResponseCode.OK))
+        call.await()
+    }
+
+    @Test
+    fun `transient refusals that never clear give up with Play's last reason`() = runTest {
+        val call = async { runCatching { manager.ensureConnected(client, "premium_1") } }
+        repeat(10) {
+            runCurrent()
+            listeners.lastOrNull()?.onBillingSetupFinished(result(BillingResponseCode.SERVICE_UNAVAILABLE, "busy"))
+            advanceTimeBy(1_000)
+        }
+        runCurrent()
+
+        val error = call.await().exceptionOrNull()
+        assertTrue("expected BillingUnavailable, got $error", error is PaygateException.BillingUnavailable)
+        error as PaygateException.BillingUnavailable
+        assertEquals(BillingResponseCode.SERVICE_UNAVAILABLE, error.responseCode)
+        // 0s, 1s, 3s, 7s — then the 8s budget runs out before a fifth.
+        assertEquals(4, listeners.size)
     }
 
     @Test
     fun `Play never answering gives up after the timeout instead of hanging`() = runTest {
         val call = async { runCatching { manager.ensureConnected(client, "premium_1") } }
         runCurrent()
-        advanceTimeBy(5_001)
+        advanceTimeBy(8_001)
         runCurrent()
 
         val error = call.await().exceptionOrNull()

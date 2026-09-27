@@ -1,3 +1,13 @@
+## 0.5.4
+
+- **A transient refusal while reconnecting is retried, not final.** When Play
+  answers the reconnect with SERVICE_UNAVAILABLE, SERVICE_DISCONNECTED,
+  NETWORK_ERROR or ERROR, the purchase retries with backoff (1s, 2s, 4s) inside
+  an 8-second budget instead of failing on the first answer — the same set and
+  shape Superwall's and RevenueCat's Android SDKs retry. BILLING_UNAVAILABLE,
+  DEVELOPER_ERROR and FEATURE_NOT_SUPPORTED still fail at once: they are
+  verdicts, and asking again only makes the reader wait for the same answer.
+
 ## 0.5.3
 
 - **Fix: Buy failed with "Billing service not connected" after Play dropped

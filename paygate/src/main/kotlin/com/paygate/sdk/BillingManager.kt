@@ -18,6 +18,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
@@ -170,12 +171,30 @@ class BillingManager private constructor(private val appContext: Context) {
     }
 
     /**
-     * How long a purchase waits for a dropped connection to come back.
+     * How long a purchase waits, across every retry, for a dropped connection
+     * to come back.
      *
      * A healthy reconnect is well under a second. This is the ceiling for a
-     * slow device, short enough that a tap still gets an answer.
+     * slow device and a couple of transient refusals, short enough that a tap
+     * still gets an answer.
      */
-    private val connectTimeoutMs = 5_000L
+    private val connectTimeoutMs = 8_000L
+
+    /**
+     * Setup results worth asking again about: Play is momentarily busy, not
+     * refusing. Retried with backoff (1s, 2s, 4s) inside [connectTimeoutMs],
+     * the same set and shape Superwall's and RevenueCat's Android SDKs retry.
+     *
+     * Everything else — BILLING_UNAVAILABLE (no Play account), DEVELOPER_ERROR
+     * (signing), FEATURE_NOT_SUPPORTED — is a verdict, and asking again only
+     * makes the reader wait longer for the same answer.
+     */
+    private val transientSetupCodes = setOf(
+        BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE,
+        BillingClient.BillingResponseCode.SERVICE_DISCONNECTED,
+        BillingClient.BillingResponseCode.NETWORK_ERROR,
+        BillingClient.BillingResponseCode.ERROR,
+    )
 
     /**
      * Makes sure [c] is connected before a purchase uses it, reconnecting if it
@@ -188,7 +207,21 @@ class BillingManager private constructor(private val appContext: Context) {
      */
     internal suspend fun ensureConnected(c: BillingClient, forProductId: String) {
         if (c.isReady) return
-        val setup = withTimeoutOrNull(connectTimeoutMs) { connect(c).await() }
+        var setup: BillingResult? = null
+        withTimeoutOrNull(connectTimeoutMs) {
+            var backoffMs = 1_000L
+            while (true) {
+                setup = connect(c).await()
+                if (c.isReady) break
+                if (setup?.responseCode !in transientSetupCodes) break
+                android.util.Log.w(
+                    "Paygate",
+                    "Play Billing setup ${describeBillingCode(setup!!.responseCode)}; retrying in ${backoffMs}ms"
+                )
+                delay(backoffMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(4_000L)
+            }
+        }
         if (c.isReady) return
         // Still down, so Play genuinely refused — or never answered. The code is
         // the diagnosis: BILLING_UNAVAILABLE is a device with no Play account
