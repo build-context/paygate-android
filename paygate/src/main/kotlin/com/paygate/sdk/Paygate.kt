@@ -73,6 +73,54 @@ object Paygate {
         if (::appContext.isInitialized) BillingManager.get(appContext).currentStorefront() else null
 
     /**
+     * A random id for this install, created on first use and persisted.
+     *
+     * Sent with every request so a gate gives this reader the same flow — and
+     * so the same price — on every launch, rather than re-rolling its weights
+     * each time. Clearing the app's data or uninstalling discards it.
+     *
+     * Not an advertising identifier and not shared with anything else; it is
+     * exposed only so you can log it alongside your own analytics or quote it
+     * in a support conversation. Reads SharedPreferences the first time, so
+     * avoid calling it first on the main thread.
+     */
+    @JvmStatic
+    fun installId(context: Context): String = InstallId.get(context)
+
+    /**
+     * Your own id for the signed-in user, if you have one.
+     *
+     * When set, a gate assigns its flow by this instead of by [installId], so
+     * one person sees the same flow on their phone and their tablet, and after
+     * a reinstall. Optional: without it, assignment is per install.
+     *
+     * Setting it moves a reader **once**, from their install's flow to their
+     * user's, so set it as early as you know who they are — ideally before the
+     * first gate launch. Clearing it (sign-out) moves them back to the
+     * install's flow.
+     *
+     * Sent as a request header. Use an opaque id (a database key, a UUID), not
+     * an email address.
+     */
+    @JvmStatic
+    @Volatile
+    var appUserId: String? = null
+        set(value) {
+            // A gate cached for this process was assigned to the old id.
+            if (value != field) gateCache.clear()
+            field = value
+        }
+
+    /**
+     * [appUserId] as sent: trimmed, and null when empty or too long for the
+     * server to accept.
+     */
+    internal fun normalizedAppUserId(): String? =
+        appUserId?.trim()?.takeIf {
+            it.isNotEmpty() && it.length <= 256 && !it.contains('\n') && !it.contains('\r')
+        }
+
+    /**
      * Cache key for a fetched flow or gate.
      *
      * The storefront is part of the key because the server bakes resolved

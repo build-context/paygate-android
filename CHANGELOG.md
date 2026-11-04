@@ -1,3 +1,22 @@
+## 0.6.0
+
+- **A gate now shows each reader the same flow every time.** The SDK creates a
+  random install id on first use, keeps it in SharedPreferences, and sends it
+  as `Paygate-Install-Id` on every request. The server hashes it with the gate
+  id to pick the flow, so a reader no longer re-rolls the gate's weights on
+  every cold launch — or, with `refresh_on_launch`, on every presentation.
+  That is what makes a price test readable: one person, one price.
+- **`Paygate.appUserId`** (optional) assigns by your own user id instead, so
+  one person gets the same flow across devices and reinstalls. Sent as
+  `Paygate-App-User-Id`; it wins over the install id. Setting it moves a reader
+  once, from their install's flow to their user's — set it before the first
+  gate launch if you can. Use an opaque id, not an email address.
+- **`Paygate.installId(context)`** exposes the install id for your own logs and
+  support. It is a UUID this SDK made up, not an advertising or device
+  identifier, and clearing the app's data discards it.
+- Changing a gate's weights still moves some readers to a different flow; see
+  the gate docs. Older SDKs keep the random per-fetch pick.
+
 ## 0.5.4
 
 - **A transient refusal while reconnecting is retried, not final.** When Play

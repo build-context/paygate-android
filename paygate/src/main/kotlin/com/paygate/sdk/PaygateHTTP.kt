@@ -15,6 +15,12 @@ internal object PaygateHTTP {
         }
         conn.setRequestProperty("Paygate-Platform", "play")
         conn.setRequestProperty("Paygate-Channel", Paygate.currentChannel(context).apiValue)
+        // Who the reader is, so a gate shows them the same flow every time.
+        // The app user id, when the app set one, wins on the server.
+        conn.setRequestProperty("Paygate-Install-Id", InstallId.get(context))
+        Paygate.normalizedAppUserId()?.let {
+            conn.setRequestProperty("Paygate-App-User-Id", it)
+        }
         // Sent, not applied locally, so the server can refuse it on production
         // and say so in its logs. A client that silently dropped it would leave
         // a developer staring at the wrong price with nothing to explain why.
