@@ -1,3 +1,31 @@
+## 0.7.0
+
+- **Restore is never silent.** When a paywall's Restore button finds nothing,
+  or Play cannot be reached, the SDK tells the page: `paygate.restore()` now
+  returns a Promise, and a flow can set `paygate.onRestore = fn` to receive
+  `{ status: "restored" | "nothing_found" | "error" }`. A flow with no handler
+  gets a native dialog for `nothing_found` and `error`, so existing flows
+  don't need editing.
+- **A Play failure no longer reads as "owns nothing".** A purchase query that
+  failed, or ran on a dropped connection, used to replace the owned set with
+  an empty one. Restore then reported nothing, and an app that trusts an empty
+  answer revoked a paying user. Now the SDK reconnects first, checks Play's
+  answer, and keeps the last known set when Play can't answer. Restore reports
+  an error in that case.
+- **Restored purchases are acknowledged.** Play refunds a purchase that is
+  still unacknowledged after three days. Purchases found by a query (a
+  restore, or a purchase that finished while the app was closed) were never
+  acknowledged. Now they are.
+- A purchase counts as owned the moment Play confirms it, before the
+  follow-up query lands.
+- **`Paygate.getActiveEntitlementProductIds()`** is the new name for what the
+  user owns: subscriptions and one-time products (lifetime unlocks), as on
+  Android it always was. `getActiveSubscriptionProductIds()` is deprecated and
+  returns the same set.
+- **`Paygate.restorePurchases()`** for a "Restore purchases" row in your own
+  settings. It returns what the user owns, and throws when Play can't answer.
+- A second tap on Restore while one is running is ignored.
+
 ## 0.6.0
 
 - **A gate now shows each reader the same flow every time.** The SDK creates a

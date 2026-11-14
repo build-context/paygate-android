@@ -38,9 +38,23 @@ class BillingManager private constructor(private val appContext: Context) {
     private var client: BillingClient? = null
     private var purchaseCompleter: CompletableDeferred<String?>? = null
 
+    /**
+     * Play product ids the user owns right now: subscriptions and one-time
+     * products (lifetime unlocks), purchased and not pending.
+     *
+     * Only ever replaced by a query Play answered successfully. A failed or
+     * disconnected query used to replace it with an empty set, which made
+     * Restore report nothing and let an app that trusts an empty answer revoke
+     * a paying user over a Play hiccup.
+     */
     @Volatile
-    var activeSubscriptionProductIds: Set<String> = emptySet()
+    var activeEntitlementProductIds: Set<String> = emptySet()
         private set
+
+    /** The old name. Includes one-time products, as it always did on Android. */
+    @Deprecated("Renamed", ReplaceWith("activeEntitlementProductIds"))
+    val activeSubscriptionProductIds: Set<String>
+        get() = activeEntitlementProductIds
 
     private val purchasesUpdatedListener = PurchasesUpdatedListener { billingResult, purchases ->
         val pending = purchaseCompleter
@@ -52,7 +66,12 @@ class BillingManager private constructor(private val appContext: Context) {
                     val productId = purchase?.products?.firstOrNull()
                     if (productId != null) {
                         acknowledgeIfNeeded(purchase)
-                        scope.launch(Dispatchers.IO) { refreshEntitlements() }
+                        // Owned from this moment, so a gate launched before
+                        // the refresh below lands is already suppressed.
+                        if (purchase.purchaseState == Purchase.PurchaseState.PURCHASED) {
+                            activeEntitlementProductIds = activeEntitlementProductIds + purchase.products
+                        }
+                        scope.launch(Dispatchers.IO) { refreshEntitlementsQuietly() }
                         pending.complete(productId)
                     } else {
                         pending.complete(null)
@@ -79,11 +98,18 @@ class BillingManager private constructor(private val appContext: Context) {
             }
         } else {
             purchases?.forEach { acknowledgeIfNeeded(it) }
-            scope.launch(Dispatchers.IO) { refreshEntitlements() }
+            scope.launch(Dispatchers.IO) { refreshEntitlementsQuietly() }
         }
     }
 
+    /**
+     * Acknowledges a completed purchase. Play refunds one that is still
+     * unacknowledged after three days, so this runs for purchases found by a
+     * query (a restore, a purchase finished while the app was closed) as well
+     * as ones made through the sheet.
+     */
     private fun acknowledgeIfNeeded(purchase: Purchase) {
+        if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) return
         if (!purchase.isAcknowledged) {
             val params = AcknowledgePurchaseParams.newBuilder()
                 .setPurchaseToken(purchase.purchaseToken)
@@ -144,7 +170,7 @@ class BillingManager private constructor(private val appContext: Context) {
             override fun onBillingSetupFinished(billingResult: BillingResult) {
                 result.complete(billingResult)
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                    scope.launch(Dispatchers.IO) { refreshEntitlements() }
+                    scope.launch(Dispatchers.IO) { refreshEntitlementsQuietly() }
                 } else {
                     android.util.Log.w(
                         "Paygate",
@@ -241,46 +267,90 @@ class BillingManager private constructor(private val appContext: Context) {
         )
     }
 
+    /**
+     * Loads what the user owns. Never throws: at startup a Play failure leaves
+     * the last known set in place and is logged, rather than failing
+     * `Paygate.initialize`.
+     *
+     * Waits at most [startupWaitMs] for Play to connect, so `initialize` is
+     * never held up by a slow or retrying connection. If it gives up, the
+     * refresh that runs when the connection is made fills the set in.
+     */
     suspend fun loadPurchasedProducts() {
-        refreshEntitlements()
+        withTimeoutOrNull(startupWaitMs) { refreshEntitlementsQuietly() }
+            ?: android.util.Log.i(
+                "Paygate",
+                "Play not ready within ${startupWaitMs}ms at startup; owned purchases load when it connects"
+            )
     }
 
+    /** How long `initialize` waits for owned purchases before moving on. */
+    private val startupWaitMs = 3_000L
+
+    /**
+     * Re-reads what the user owns from Play (Restore), and **throws when Play
+     * cannot answer**, so a caller can tell "you own nothing" from "we could
+     * not ask". Play has no separate restore call: its purchase query already
+     * reflects every purchase on the signed-in account.
+     */
     suspend fun syncPurchases() {
         refreshEntitlements()
     }
 
+    private suspend fun refreshEntitlementsQuietly() {
+        try {
+            refreshEntitlements()
+        } catch (e: Exception) {
+            android.util.Log.w("Paygate", "Could not refresh owned purchases; keeping the last known set", e)
+        }
+    }
+
     private suspend fun refreshEntitlements() = mutex.withLock {
-        val c = client ?: return@withLock
-        val active = linkedSetOf<String>()
-        suspendCancellableCoroutine { cont ->
-            c.queryPurchasesAsync(
-                QueryPurchasesParams.newBuilder()
-                    .setProductType(BillingClient.ProductType.SUBS)
-                    .build()
-            ) { _, list ->
-                list.forEach { p ->
-                    if (p.purchaseState == Purchase.PurchaseState.PURCHASED) {
-                        p.products.forEach { active.add(it) }
-                    }
+        val c = client ?: throw PaygateException.BillingUnavailable(null, "Billing was never started")
+        ensureConnected(c, "owned purchases")
+        val owned = linkedSetOf<String>()
+        owned += queryOwned(c, BillingClient.ProductType.SUBS)
+        owned += queryOwned(c, BillingClient.ProductType.INAPP)
+        activeEntitlementProductIds = owned.toSet()
+    }
+
+    /**
+     * The product ids Play reports as purchased for one product type, or a
+     * throw. Both halves matter: a failed query used to read as "owns
+     * nothing".
+     */
+    private suspend fun queryOwned(c: BillingClient, type: String): Set<String> {
+        val answer = withTimeoutOrNull(queryTimeoutMs) {
+            suspendCancellableCoroutine<Pair<BillingResult, List<Purchase>>> { cont ->
+                c.queryPurchasesAsync(
+                    QueryPurchasesParams.newBuilder().setProductType(type).build()
+                ) { result, list ->
+                    if (cont.isActive) cont.resume(result to list)
                 }
-                cont.resume(Unit)
+            }
+        } ?: throw PaygateException.BillingUnavailable(null, "Play did not answer the $type purchase query")
+        val (result, list) = answer
+        if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+            android.util.Log.w(
+                "Paygate",
+                "queryPurchases($type): ${describeBillingCode(result.responseCode)} (${result.responseCode})" +
+                    (result.debugMessage?.takeIf { it.isNotBlank() }?.let { " — $it" } ?: "")
+            )
+            throw PaygateException.BillingUnavailable(result.responseCode, result.debugMessage)
+        }
+        return ownedProductIds(list)
+    }
+
+    /** Purchased (not pending) purchases' product ids, acknowledging each. */
+    internal fun ownedProductIds(purchases: List<Purchase>): Set<String> {
+        val owned = linkedSetOf<String>()
+        for (p in purchases) {
+            if (p.purchaseState == Purchase.PurchaseState.PURCHASED) {
+                acknowledgeIfNeeded(p)
+                owned += p.products
             }
         }
-        suspendCancellableCoroutine { cont ->
-            c.queryPurchasesAsync(
-                QueryPurchasesParams.newBuilder()
-                    .setProductType(BillingClient.ProductType.INAPP)
-                    .build()
-            ) { _, list ->
-                list.forEach { p ->
-                    if (p.purchaseState == Purchase.PurchaseState.PURCHASED) {
-                        p.products.forEach { active.add(it) }
-                    }
-                }
-                cont.resume(Unit)
-            }
-        }
-        activeSubscriptionProductIds = active.toSet()
+        return owned
     }
 
     /**

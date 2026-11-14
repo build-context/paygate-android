@@ -247,9 +247,37 @@ object Paygate {
         PresentationAnalytics.flushPendingOutbox(appContext, apiKey, this.baseURL)
     }
 
-    suspend fun getActiveSubscriptionProductIds(): Set<String> {
+    /**
+     * Play product ids the user owns right now: subscriptions and one-time
+     * products (lifetime unlocks), purchased and not pending.
+     *
+     * The last answer Play gave. A Play failure never empties it, so an empty
+     * set means Play said the user owns nothing.
+     */
+    suspend fun getActiveEntitlementProductIds(): Set<String> {
         if (!::appContext.isInitialized) throw PaygateException.NotInitialized
-        return BillingManager.get(appContext).activeSubscriptionProductIds.toSet()
+        return BillingManager.get(appContext).activeEntitlementProductIds.toSet()
+    }
+
+    /** The old name for [getActiveEntitlementProductIds]; the same set. */
+    @Deprecated("Renamed", ReplaceWith("getActiveEntitlementProductIds()"))
+    suspend fun getActiveSubscriptionProductIds(): Set<String> = getActiveEntitlementProductIds()
+
+    /**
+     * Restore purchases, for a "Restore purchases" row in your own settings.
+     *
+     * Asks Play again what the signed-in account owns and returns it — empty
+     * when there is nothing to restore. Throws [PaygateException] when Play
+     * cannot answer, so "could not check" never reads as "owns nothing".
+     *
+     * A paywall's own Restore button (`paygate.restore()` in the flow) does
+     * not need this; the SDK handles it.
+     */
+    suspend fun restorePurchases(): Set<String> {
+        if (!::appContext.isInitialized) throw PaygateException.NotInitialized
+        val billing = BillingManager.get(appContext)
+        withContext(Dispatchers.IO) { billing.syncPurchases() }
+        return billing.activeEntitlementProductIds.toSet()
     }
 
     /**
@@ -275,7 +303,7 @@ object Paygate {
             flowCache[flowKey] ?: fr.getFlow(flowId, storefront).also { flowCache[flowKey] = it }
         }
 
-        val active = BillingManager.get(appContext).activeSubscriptionProductIds
+        val active = BillingManager.get(appContext).activeEntitlementProductIds
         for (storeId in flowData.productIdMap.values) {
             if (active.contains(storeId)) {
                 return PaygateLaunchResult(
@@ -349,7 +377,7 @@ object Paygate {
         }
 
         val flowData = response.flowData
-        val active = BillingManager.get(appContext).activeSubscriptionProductIds
+        val active = BillingManager.get(appContext).activeEntitlementProductIds
         for (storeId in flowData.productIdMap.values) {
             if (active.contains(storeId)) {
                 return PaygateLaunchResult(

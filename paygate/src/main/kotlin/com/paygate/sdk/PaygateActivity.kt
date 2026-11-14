@@ -2,6 +2,7 @@ package com.paygate.sdk
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
@@ -38,6 +39,11 @@ class PaygateActivity : Activity() {
     /** Store country this flow's prices were resolved for, when known. */
     private var storefront: String? = null
     private var didComplete: Boolean = false
+    /**
+     * True while a Restore is running, so a second tap does not start a
+     * second Play query.
+     */
+    private var isRestoring: Boolean = false
 
     private var eventBuffer: PresentationEventBuffer? = null
     private var webView: WebView? = null
@@ -197,6 +203,7 @@ class PaygateActivity : Activity() {
             $pageDivs
             <script>$bridgeShim</script>
             ${flowData.bridgeScript}
+            ${RestoreBridge.script}
             </body>
             </html>
         """.trimIndent()
@@ -324,13 +331,35 @@ class PaygateActivity : Activity() {
         }
     }
 
+    /**
+     * Restore: ask Play what this account owns, unlock if it includes one of
+     * this flow's products (lifetime included), and otherwise tell the reader
+     * so — never silence. The outcome goes back to the page through
+     * [RestoreBridge]; when the page shows no message of its own, the SDK
+     * shows a dialog.
+     */
     private fun handleRestore(o: JSONObject) {
         eventBuffer?.append("bridge_restore", emptyMap())
+        if (isRestoring) {
+            android.util.Log.i("Paygate", "Restore already in progress; ignoring the extra tap")
+            return
+        }
+        isRestoring = true
         val data = o.optJSONObject("data")?.toStringMap()
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                BillingManager.get(applicationContext).syncPurchases()
-                val active = BillingManager.get(applicationContext).activeSubscriptionProductIds
+                val billing = BillingManager.get(applicationContext)
+                try {
+                    billing.syncPurchases()
+                } catch (e: Exception) {
+                    // Play could not answer, which is not the same as owning
+                    // nothing. Never reported as "nothing found".
+                    android.util.Log.e("Paygate", "Restore failed", e)
+                    eventBuffer?.append("restore_error", mapOf("message" to (e.message ?: "")))
+                    reportRestore(RestoreBridge.Status.ERROR, message = e.message)
+                    return@launch
+                }
+                val active = billing.activeEntitlementProductIds
                 val map = flowData.productIdMap
                 for (paygateProductId in flowData.productIds) {
                     val sid = map[paygateProductId] ?: paygateProductId
@@ -347,17 +376,38 @@ class PaygateActivity : Activity() {
                                 "restore_completed", meta
                             )
                         }
+                        reportRestore(RestoreBridge.Status.RESTORED, productId = sid)
                         finishWith(PaygateResult.Purchased(sid, data))
                         return@launch
                     }
                 }
-                eventBuffer?.append("restore_no_entitlement", emptyMap())
-            } catch (e: Exception) {
-                eventBuffer?.append(
-                    "restore_error",
-                    mapOf("message" to (e.message ?: ""))
+                android.util.Log.i(
+                    "Paygate",
+                    "Restore: nothing owned among this flow's products (owns: ${active.sorted().joinToString()})"
                 )
+                eventBuffer?.append("restore_no_entitlement", emptyMap())
+                reportRestore(RestoreBridge.Status.NOTHING_FOUND)
+            } finally {
+                isRestoring = false
             }
+        }
+    }
+
+    /**
+     * Hands a restore outcome to the page, and shows the SDK's own dialog when
+     * the page does not handle it.
+     */
+    private fun reportRestore(status: RestoreBridge.Status, productId: String? = null, message: String? = null) {
+        val wv = webView ?: return
+        wv.evaluateJavascript(RestoreBridge.deliverScript(status, productId, message)) { value ->
+            val handled = value == "true"
+            if (handled || isFinishing || isDestroyed) return@evaluateJavascript
+            val (title, body) = RestoreBridge.fallbackAlert(status) ?: return@evaluateJavascript
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(body)
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
         }
     }
 
