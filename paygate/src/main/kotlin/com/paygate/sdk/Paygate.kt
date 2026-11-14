@@ -245,6 +245,7 @@ object Paygate {
             BillingManager.get(appContext).loadPurchasedProducts()
         }
         PresentationAnalytics.flushPendingOutbox(appContext, apiKey, this.baseURL)
+        PurchaseReporter.flushPending(appContext, apiKey, this.baseURL)
     }
 
     /**

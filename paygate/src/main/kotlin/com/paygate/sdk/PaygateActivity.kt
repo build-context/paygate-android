@@ -301,9 +301,30 @@ class PaygateActivity : Activity() {
         }
         CoroutineScope(Dispatchers.Main).launch {
             try {
-                val purchased = BillingManager.get(applicationContext)
-                    .purchase(this@PaygateActivity, storeId, basePlanId)
-                if (purchased != null) {
+                val completed = BillingManager.get(applicationContext)
+                    .purchaseDetailed(this@PaygateActivity, storeId, basePlanId)
+                val purchased = completed?.productId
+                if (completed != null && purchased != null) {
+                    // Credit the gate and paywall that sold it. Gate sessions
+                    // only: a flow launched on its own has no gate to credit,
+                    // and its money is correctly reported as unattributed.
+                    gateId?.let { gid ->
+                        PurchaseReporter.report(
+                            applicationContext,
+                            PendingPurchaseReport(
+                                id = java.util.UUID.randomUUID().toString(),
+                                purchaseToken = completed.purchaseToken,
+                                orderId = completed.orderId,
+                                gateId = gid,
+                                flowId = flowData.id,
+                                storeProductId = purchased,
+                                appUserId = Paygate.normalizedAppUserId(),
+                                clientBatchId = eventBuffer?.clientBatchId,
+                            ),
+                            apiKey,
+                            baseURL
+                        )
+                    }
                     if (eventBuffer != null) {
                         eventBuffer?.append("purchase_completed", mapOf("productId" to purchased))
                     } else {

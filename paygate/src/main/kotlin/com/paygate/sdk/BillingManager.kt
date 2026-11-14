@@ -36,7 +36,14 @@ class BillingManager private constructor(private val appContext: Context) {
 
     @Volatile
     private var client: BillingClient? = null
-    private var purchaseCompleter: CompletableDeferred<String?>? = null
+    private var purchaseCompleter: CompletableDeferred<CompletedPurchase?>? = null
+
+    /** What a completed purchase was, for reporting it to Paygate. */
+    internal data class CompletedPurchase(
+        val productId: String,
+        val purchaseToken: String,
+        val orderId: String?,
+    )
 
     /**
      * Play product ids the user owns right now: subscriptions and one-time
@@ -72,7 +79,7 @@ class BillingManager private constructor(private val appContext: Context) {
                             activeEntitlementProductIds = activeEntitlementProductIds + purchase.products
                         }
                         scope.launch(Dispatchers.IO) { refreshEntitlementsQuietly() }
-                        pending.complete(productId)
+                        pending.complete(CompletedPurchase(productId, purchase.purchaseToken, purchase.orderId))
                     } else {
                         pending.complete(null)
                     }
@@ -397,7 +404,15 @@ class BillingManager private constructor(private val appContext: Context) {
      * tapping Buy and getting nothing at all — no sheet, no error, no log —
      * which is indistinguishable from a dead button.
      */
-    suspend fun purchase(activity: Activity, storeProductId: String, basePlanId: String? = null): String? {
+    suspend fun purchase(activity: Activity, storeProductId: String, basePlanId: String? = null): String? =
+        purchaseDetailed(activity, storeProductId, basePlanId)?.productId
+
+    /** [purchase], returning the purchase token and order id too. */
+    internal suspend fun purchaseDetailed(
+        activity: Activity,
+        storeProductId: String,
+        basePlanId: String? = null,
+    ): CompletedPurchase? {
         val c = client ?: run {
             // `start()` assigns the client synchronously, so this means
             // initialize() never ran or failed — not a transient state worth
@@ -428,7 +443,7 @@ class BillingManager private constructor(private val appContext: Context) {
             .setProductDetailsParamsList(productDetailsParamsList)
             .build()
 
-        val deferred = CompletableDeferred<String?>()
+        val deferred = CompletableDeferred<CompletedPurchase?>()
         purchaseCompleter = deferred
         val result = c.launchBillingFlow(activity, flowParams)
         if (result.responseCode != BillingClient.BillingResponseCode.OK) {

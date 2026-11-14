@@ -21,9 +21,12 @@ internal class PresentationEventBuffer(
     private val lock = Any()
     private var pending: PendingPresentation
 
+    /** This presentation's batch id, so a purchase report can point at it. */
+    val clientBatchId: String = java.util.UUID.randomUUID().toString()
+
     init {
         val openedAt = System.currentTimeMillis()
-        val batchId = java.util.UUID.randomUUID().toString()
+        val batchId = clientBatchId
         pending = PendingPresentation(
             clientBatchId = batchId,
             gateId = gateId,

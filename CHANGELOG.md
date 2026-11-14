@@ -1,3 +1,16 @@
+## 0.7.1
+
+- **A purchase made in a gate is credited to that gate.** After a purchase
+  completes inside `launchGate`, the SDK reports which gate and paywall sold
+  it (`POST /sdk/purchases`, with the purchase token). Paygate pairs that with
+  Play's Real-time Developer Notification, which it checks against Play for
+  the price, so revenue shows under the gate and its price-test arm instead of
+  as unattributed. Before this nothing reported it.
+- The report carries no price, and it is saved to disk before it is sent, so
+  a killed or offline app still sends it on its next launch. Restores are not
+  reported.
+- No API changes.
+
 ## 0.7.0
 
 - **Restore is never silent.** When a paywall's Restore button finds nothing,
