@@ -1,4 +1,4 @@
-## Unreleased
+## 0.8.0
 
 - **Paygate acknowledges only the purchases it made.** It used to acknowledge
   every purchase a Play query found, including ones the app's own purchase
