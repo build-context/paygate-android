@@ -1,3 +1,18 @@
+## Unreleased
+
+- **Paygate acknowledges only the purchases it made.** It used to acknowledge
+  every purchase a Play query found, including ones the app's own purchase
+  code made, before the app's server had verified them. It now acknowledges
+  what it bought, including a pending purchase that completes later, and
+  leaves the rest. **If Paygate is the only thing in your app that buys,** set
+  `Paygate.completesAllPurchases = true` before `initialize` so purchases made
+  outside the app are still acknowledged before Play refunds them.
+- **`Paygate.locale`**, and `locale` on `launchGate` and `launchFlow`: the
+  paywall follows the app's language instead of the device's. The flow sees it
+  as `navigator.language` and `paygate.locale`, and Paygate writes a product's
+  billing period and trial in it. Prices don't change; they follow the
+  reader's store country. `null`, the default, keeps the device language.
+
 ## 0.7.0
 
 - **Restore is never silent.** When a paywall's Restore button finds nothing,

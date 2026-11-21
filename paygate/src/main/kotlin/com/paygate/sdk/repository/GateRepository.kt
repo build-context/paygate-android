@@ -9,8 +9,8 @@ internal class GateRepository(
     appContext: android.content.Context
 ) : PaygateRepository(baseURL, apiKey, appContext) {
 
-    fun getGate(gateId: String, storefront: String? = null): GateFlowResponse {
-        val json = getJson("/sdk/gates/$gateId", storefront)
+    fun getGate(gateId: String, storefront: String? = null, locale: String? = null): GateFlowResponse {
+        val json = getJson("/sdk/gates/$gateId", storefront, locale)
         return parseGateFlowResponse(json)
     }
 }

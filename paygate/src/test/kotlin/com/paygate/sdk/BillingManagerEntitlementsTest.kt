@@ -139,15 +139,60 @@ class BillingManagerEntitlementsTest {
         assertEquals(setOf("monthly"), manager.activeEntitlementProductIds)
     }
 
+    private class MemoryTokens(vararg tokens: String) : OwnPurchaseTokens {
+        val set = tokens.toMutableSet()
+        override fun add(token: String) { set += token }
+        override fun contains(token: String) = token in set
+    }
+
     @Test
-    fun `a restored purchase that was never acknowledged gets acknowledged`() = runTest {
+    fun `a restored purchase Paygate made that was never acknowledged gets acknowledged`() = runTest {
         val client = clientAnswering(
             subs = ok() to emptyList(),
             inapp = ok() to listOf(purchase("lifetime", acknowledged = false))
         )
         val manager = managerWith(client)
+        manager.ownPurchases = MemoryTokens("token-lifetime")
 
         manager.syncPurchases()
+
+        verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
+    }
+
+    /**
+     * The race this guards: Paygate acknowledged a purchase the app's own code
+     * made, before the app's server had verified it.
+     */
+    @Test
+    fun `a purchase the app made itself is left for the app to acknowledge`() = runTest {
+        val client = clientAnswering(
+            subs = ok() to listOf(purchase("annual", acknowledged = false)),
+            inapp = ok() to emptyList()
+        )
+        val manager = managerWith(client)
+        manager.ownPurchases = MemoryTokens()
+
+        manager.syncPurchases()
+
+        verify(exactly = 0) { client.acknowledgePurchase(any(), any()) }
+        // Still owned: leaving it alone is about acknowledging, not entitlement.
+        assertEquals(setOf("annual"), manager.activeEntitlementProductIds)
+    }
+
+    @Test
+    fun `an app that opts in gets every purchase acknowledged`() = runTest {
+        val client = clientAnswering(
+            subs = ok() to listOf(purchase("annual", acknowledged = false)),
+            inapp = ok() to emptyList()
+        )
+        val manager = managerWith(client)
+        manager.ownPurchases = MemoryTokens()
+        Paygate.completesAllPurchases = true
+        try {
+            manager.syncPurchases()
+        } finally {
+            Paygate.completesAllPurchases = false
+        }
 
         verify(exactly = 1) { client.acknowledgePurchase(any(), any()) }
     }
