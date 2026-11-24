@@ -112,6 +112,42 @@ object Paygate {
         }
 
     /**
+     * Whether Paygate acknowledges **every** Play purchase it finds, not only
+     * the ones it made.
+     *
+     * Off by default. Paygate acknowledges what it bought, including a pending
+     * purchase that completes later, and leaves every other purchase alone. An
+     * app with purchase code of its own (one that verifies a purchase with its
+     * server before acknowledging it) relies on that: before 0.8.0 Paygate
+     * acknowledged those too, before the app had verified them.
+     *
+     * Turn it on only when Paygate is the one thing in the app that buys, so a
+     * purchase made outside the app still gets acknowledged before Play
+     * refunds it after three days. That is how every version before 0.8.0
+     * behaved. Set it before [initialize].
+     */
+    @JvmStatic
+    @Volatile
+    var completesAllPurchases: Boolean = false
+
+    /**
+     * The language the app shows, as a BCP 47 tag (`"es"`, `"pt-BR"`), when
+     * the app has a language setting of its own. Null, the default, means the
+     * device language.
+     *
+     * A paywall is a web page, so it sees the device's language, not the
+     * app's. Set this when the reader picks a language in your app and the
+     * paywall follows it: the flow reads it as `paygate.locale`,
+     * `navigator.language` reports it, and the wording Paygate writes for a
+     * product's billing period and trial comes back in it. Prices do not
+     * change: they are the store's price for the reader's country, which is
+     * what they are charged. A `locale` passed to a launch wins over this.
+     */
+    @JvmStatic
+    @Volatile
+    var locale: String? = null
+
+    /**
      * [appUserId] as sent: trimmed, and null when empty or too long for the
      * server to accept.
      */
@@ -129,9 +165,11 @@ object Paygate {
      * first to everyone afterwards — the same wrong-price bug, with a harder
      * repro.
      */
-    private fun cacheKey(id: String, storefront: String?): String =
+    private fun cacheKey(id: String, storefront: String?, locale: String?): String =
         // The platform is constant within a build, so it adds nothing here.
-        "$id|${storefront ?: "-"}"
+        // The language is in the key because the server writes a product's
+        // period and trial wording in it.
+        "$id|${storefront ?: "-"}|${locale ?: "-"}"
 
     /**
      * Force the distribution channel, whatever this build actually is.
@@ -285,23 +323,27 @@ object Paygate {
      * @param appearance Color scheme to pin the flow to. Flows carry no
      *   appearance of their own — that setting lives on the gate — so this
      *   defaults to [PaygateAppearance.SYSTEM], which follows the device.
+     * @param locale The language for this paywall, overriding [Paygate.locale].
+     *   Null uses [Paygate.locale], and the device language when that is unset.
      */
     suspend fun launchFlow(
         activity: Activity,
         flowId: String,
         bounces: Boolean = false,
         presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET,
-        appearance: PaygateAppearance = PaygateAppearance.SYSTEM
+        appearance: PaygateAppearance = PaygateAppearance.SYSTEM,
+        locale: String? = null
     ): PaygateLaunchResult {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val fr = flows ?: throw PaygateException.NotInitialized
 
         // Never block the launch on Play — see BillingManager.currentStorefront.
         val storefront = currentStorefront()
-        val flowKey = cacheKey(flowId, storefront)
+        val language = LocaleBridge.normalize(locale ?: this.locale)
+        val flowKey = cacheKey(flowId, storefront, language)
 
         val flowData = withContext(Dispatchers.IO) {
-            flowCache[flowKey] ?: fr.getFlow(flowId, storefront).also { flowCache[flowKey] = it }
+            flowCache[flowKey] ?: fr.getFlow(flowId, storefront, language).also { flowCache[flowKey] = it }
         }
 
         val active = BillingManager.get(appContext).activeEntitlementProductIds
@@ -325,6 +367,7 @@ object Paygate {
             disableWebViewCache = false,
             appearance = appearance,
             storefront = storefront,
+            locale = language,
             presentationStyle = presentationStyle
         )
         return mapFlowLaunchResult(raw)
@@ -336,13 +379,16 @@ object Paygate {
      *   the system night mode, not your app, so leaving it to the gate means
      *   the paywall can disagree with the screen behind it. `null` (the
      *   default) uses whatever the gate is set to.
+     * @param locale The language for this paywall, overriding [Paygate.locale].
+     *   Null uses [Paygate.locale], and the device language when that is unset.
      */
     suspend fun launchGate(
         activity: Activity,
         gateId: String,
         bounces: Boolean = false,
         presentationStyle: PaygatePresentationStyle = PaygatePresentationStyle.SHEET,
-        appearance: PaygateAppearance? = null
+        appearance: PaygateAppearance? = null,
+        locale: String? = null
     ): PaygateLaunchResult {
         val key = apiKey ?: throw PaygateException.NotInitialized
         val gr = gates ?: throw PaygateException.NotInitialized
@@ -350,11 +396,12 @@ object Paygate {
         val channel = currentChannel(activity)
         // Never block the launch on Play — see BillingManager.currentStorefront.
         val storefront = currentStorefront()
-        val gateKey = cacheKey(gateId, storefront)
+        val language = LocaleBridge.normalize(locale ?: this.locale)
+        val gateKey = cacheKey(gateId, storefront, language)
 
         val response: GateFlowResponse = try {
             withContext(Dispatchers.IO) {
-                gateCache[gateKey] ?: gr.getGate(gateId, storefront).also { fetched ->
+                gateCache[gateKey] ?: gr.getGate(gateId, storefront, language).also { fetched ->
                     // Caching is decided by this build's channel, so a debug
                     // build set to refresh re-fetches while the shipped app
                     // still caches.
@@ -402,6 +449,7 @@ object Paygate {
             // that do not.
             appearance = appearance ?: response.appearance,
             storefront = storefront,
+            locale = language,
             presentationStyle = presentationStyle
         )
         return mapGateLaunchResult(raw)
@@ -427,6 +475,7 @@ object Paygate {
         disableWebViewCache: Boolean,
         appearance: PaygateAppearance,
         storefront: String?,
+        locale: String?,
         @Suppress("UNUSED_PARAMETER") presentationStyle: PaygatePresentationStyle
     ): PaygateResult = withContext(Dispatchers.Main) {
         coroutineScope {
@@ -443,7 +492,8 @@ object Paygate {
                 purchaseRequired = purchaseRequired,
                 disableWebViewCache = disableWebViewCache,
                 appearance = appearance,
-                storefront = storefront
+                storefront = storefront,
+                locale = locale
             )
             // TODO: sheet vs fullScreen — Android uses single Activity theme; host may wrap in BottomSheet if needed.
             activity.startActivity(intent)

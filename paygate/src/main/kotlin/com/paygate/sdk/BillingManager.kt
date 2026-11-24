@@ -63,12 +63,22 @@ class BillingManager private constructor(private val appContext: Context) {
     val activeSubscriptionProductIds: Set<String>
         get() = activeEntitlementProductIds
 
+    /**
+     * The purchase tokens Paygate made, so it acknowledges only its own. See
+     * [Paygate.completesAllPurchases].
+     */
+    internal var ownPurchases: OwnPurchaseTokens = SharedPrefsOwnPurchaseTokens(appContext)
+
     private val purchasesUpdatedListener = PurchasesUpdatedListener { billingResult, purchases ->
         val pending = purchaseCompleter
         if (pending != null) {
             purchaseCompleter = null
             when (billingResult.responseCode) {
                 BillingClient.BillingResponseCode.OK -> {
+                    // Paygate opened this sheet, so whatever it returns is
+                    // Paygate's, including a pending purchase that completes in
+                    // a later launch under the same token.
+                    purchases?.forEach { ownPurchases.add(it.purchaseToken) }
                     val purchase = purchases?.firstOrNull()
                     val productId = purchase?.products?.firstOrNull()
                     if (productId != null) {
@@ -110,13 +120,18 @@ class BillingManager private constructor(private val appContext: Context) {
     }
 
     /**
-     * Acknowledges a completed purchase. Play refunds one that is still
-     * unacknowledged after three days, so this runs for purchases found by a
-     * query (a restore, a purchase finished while the app was closed) as well
-     * as ones made through the sheet.
+     * Acknowledges a completed purchase **that Paygate made** (or any, when the
+     * app opted in with [Paygate.completesAllPurchases]).
+     *
+     * Play refunds a purchase still unacknowledged after three days, so this
+     * runs for purchases found by a query (a restore, a pending purchase that
+     * completed while the app was closed) as well as ones made through the
+     * sheet. A purchase the app's own code made is the app's to acknowledge,
+     * after its server has verified it.
      */
     private fun acknowledgeIfNeeded(purchase: Purchase) {
         if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) return
+        if (!shouldAcknowledge(purchase.purchaseToken, Paygate.completesAllPurchases, ownPurchases)) return
         if (!purchase.isAcknowledged) {
             val params = AcknowledgePurchaseParams.newBuilder()
                 .setPurchaseToken(purchase.purchaseToken)
@@ -626,10 +641,62 @@ class BillingManager private constructor(private val appContext: Context) {
         @Volatile
         private var instance: BillingManager? = null
 
+        /** Whether a found purchase is Paygate's to acknowledge. */
+        internal fun shouldAcknowledge(token: String, completesAll: Boolean, own: OwnPurchaseTokens): Boolean =
+            completesAll || own.contains(token)
+
         fun get(context: Context): BillingManager {
             return instance ?: synchronized(this) {
                 instance ?: BillingManager(context.applicationContext).also { instance = it }
             }
         }
+    }
+}
+
+/** The purchase tokens Paygate made. */
+internal interface OwnPurchaseTokens {
+    fun add(token: String)
+    fun contains(token: String): Boolean
+}
+
+/**
+ * Kept on disk because a pending purchase can complete in a later launch.
+ * Capped, oldest dropped first: a token only matters until it is
+ * acknowledged, which is days at most.
+ *
+ * Never throws. If storage cannot be read, nothing counts as Paygate's, which
+ * errs toward leaving a purchase for the app rather than acknowledging one
+ * that is not Paygate's.
+ */
+internal class SharedPrefsOwnPurchaseTokens(private val context: Context) : OwnPurchaseTokens {
+    private val lock = Any()
+
+    private fun prefs() = try {
+        context.getSharedPreferences("com.paygate.sdk.own_purchases", Context.MODE_PRIVATE)
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun read(): List<String> = try {
+        prefs()?.getString(KEY, null)?.split('\n')?.filter { it.isNotEmpty() } ?: emptyList()
+    } catch (_: Throwable) {
+        emptyList()
+    }
+
+    override fun add(token: String) {
+        synchronized(lock) {
+            val tokens = (read() - token + token).takeLast(MAX)
+            try {
+                prefs()?.edit()?.putString(KEY, tokens.joinToString("\n"))?.apply()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    override fun contains(token: String): Boolean = synchronized(lock) { token in read() }
+
+    private companion object {
+        const val KEY = "tokens"
+        const val MAX = 100
     }
 }

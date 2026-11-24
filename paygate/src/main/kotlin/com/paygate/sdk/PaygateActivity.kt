@@ -38,6 +38,8 @@ class PaygateActivity : Activity() {
     private var appearance: PaygateAppearance = PaygateAppearance.SYSTEM
     /** Store country this flow's prices were resolved for, when known. */
     private var storefront: String? = null
+    /** The app's language, already normalized; null keeps the device's. */
+    private var locale: String? = null
     private var didComplete: Boolean = false
     /**
      * True while a Restore is running, so a second tap does not start a
@@ -163,6 +165,7 @@ class PaygateActivity : Activity() {
         disableWebViewCache = b.getBoolean(EXTRA_DISABLE_CACHE, false)
         appearance = PaygateAppearance.fromServerValue(b.getString(EXTRA_APPEARANCE))
         storefront = b.getString(EXTRA_STOREFRONT)
+        locale = LocaleBridge.normalize(b.getString(EXTRA_LOCALE))
         val flowJson = b.getString(EXTRA_FLOW_JSON) ?: return false
         flowData = try {
             parseFlowData(JSONObject(flowJson))
@@ -192,18 +195,20 @@ class PaygateActivity : Activity() {
 
         val html = """
             <!DOCTYPE html>
-            <html lang="en">
+            <html lang="${LocaleBridge.htmlLang(locale)}">
             <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
             <title>Flow</title>
             <style>* { -webkit-user-select: none !important; user-select: none !important; }</style>
+            ${LocaleBridge.headScript(locale) ?: ""}
             </head>
             <body>
             $pageDivs
             <script>$bridgeShim</script>
             ${flowData.bridgeScript}
             ${RestoreBridge.script}
+            ${LocaleBridge.tailScript(locale)}
             </body>
             </html>
         """.trimIndent()
@@ -454,6 +459,7 @@ class PaygateActivity : Activity() {
         const val EXTRA_DISABLE_CACHE = "paygate_disable_cache"
         const val EXTRA_APPEARANCE = "paygate_appearance"
         const val EXTRA_STOREFRONT = "paygate_storefront"
+        const val EXTRA_LOCALE = "paygate_locale"
         const val EXTRA_FLOW_JSON = "paygate_flow_json"
 
         fun createIntent(
@@ -466,7 +472,8 @@ class PaygateActivity : Activity() {
             purchaseRequired: Boolean,
             disableWebViewCache: Boolean,
             appearance: PaygateAppearance = PaygateAppearance.SYSTEM,
-            storefront: String? = null
+            storefront: String? = null,
+            locale: String? = null
         ): Intent {
             return Intent(activity, PaygateActivity::class.java).apply {
                 putExtra(EXTRA_API_KEY, apiKey)
@@ -477,6 +484,7 @@ class PaygateActivity : Activity() {
                 putExtra(EXTRA_DISABLE_CACHE, disableWebViewCache)
                 putExtra(EXTRA_APPEARANCE, appearance.name)
                 putExtra(EXTRA_STOREFRONT, storefront)
+                putExtra(EXTRA_LOCALE, locale)
                 putExtra(EXTRA_FLOW_JSON, flowData.toJsonObject().toString())
             }
         }
